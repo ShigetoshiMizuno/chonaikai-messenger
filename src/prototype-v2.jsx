@@ -1,24 +1,34 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 
 // ============================================
 // 町内会メッセンジャー v2
 // 電話番号 + WebAuthn (Face ID / 指紋) 認証
 // ============================================
 
-const STORAGE_KEYS = {
-  MESSAGES: "chonaikai-v2:messages",
-  USERS: "chonaikai-v2:users",
-  READS_PREFIX: "chonaikai-v2:reads:",
-  SESSION: "chonaikai-v2:session",
-  CREDENTIALS: "chonaikai-v2:credentials",
-};
-
+const SESSION_KEY = "chonaikai-v2:session";
 const ADMIN_PIN = "1234";
 
+// ---- API Helper ----
+const api = {
+  async get(path) {
+    const res = await fetch(path);
+    return res.json();
+  },
+  async post(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  },
+  async del(path) {
+    const res = await fetch(path, { method: "DELETE" });
+    return res.json();
+  },
+};
+
 // ---- Utilities ----
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
 function formatDate(iso) {
   const d = new Date(iso);
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -36,6 +46,9 @@ function formatPhone(p) {
   if (d.length === 11) return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
   return p;
 }
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
 
 const PRIORITY = {
   urgent: { label: "緊急", color: "#dc2626", bg: "#fef2f2", icon: "🚨" },
@@ -51,17 +64,6 @@ const CATEGORIES = [
   { id: "safety", label: "防犯", icon: "🔒" },
   { id: "other", label: "その他", icon: "📎" },
 ];
-
-// ---- Storage ----
-async function sGet(key, shared = false) {
-  try {
-    const r = await window.storage.get(key, shared);
-    return r ? JSON.parse(r.value) : null;
-  } catch { return null; }
-}
-async function sSet(key, val, shared = false) {
-  try { await window.storage.set(key, JSON.stringify(val), shared); return true; } catch { return false; }
-}
 
 // ============================================
 // WebAuthn Helpers (simulated for demo)
@@ -720,20 +722,19 @@ export default function App() {
   // ---- Init ----
   useEffect(() => {
     (async () => {
-      const session = await sGet(STORAGE_KEYS.SESSION);
-      if (session) setSavedUser(session);
+      try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (raw) setSavedUser(JSON.parse(raw));
+      } catch {}
 
-      const msgs = (await sGet(STORAGE_KEYS.MESSAGES, true)) || [];
-      setMessages(msgs);
-
-      const reads = {};
-      for (const m of msgs) {
-        reads[m.id] = (await sGet(STORAGE_KEYS.READS_PREFIX + m.id, true)) || [];
+      try {
+        const data = await api.get("/api/messages");
+        setMessages(data.messages || []);
+        setReadMap(data.readMap || {});
+        setUsers(data.members || []);
+      } catch (e) {
+        console.error("Failed to load data:", e);
       }
-      setReadMap(reads);
-
-      const u = (await sGet(STORAGE_KEYS.USERS, true)) || [];
-      setUsers(u);
       setLoading(false);
     })();
   }, []);
@@ -742,29 +743,31 @@ export default function App() {
   useEffect(() => {
     if (!currentUser && !isAdmin) return;
     const iv = setInterval(async () => {
-      const msgs = (await sGet(STORAGE_KEYS.MESSAGES, true)) || [];
-      setMessages(msgs);
-      const reads = {};
-      for (const m of msgs) reads[m.id] = (await sGet(STORAGE_KEYS.READS_PREFIX + m.id, true)) || [];
-      setReadMap(reads);
-      setUsers((await sGet(STORAGE_KEYS.USERS, true)) || []);
+      try {
+        const data = await api.get("/api/messages");
+        setMessages(data.messages || []);
+        setReadMap(data.readMap || {});
+        setUsers(data.members || []);
+      } catch {}
     }, 5000);
     return () => clearInterval(iv);
   }, [currentUser, isAdmin]);
 
   // ---- Register ----
   const handleRegister = async (data) => {
-    const user = { id: generateId(), phone: data.phone, name: data.name, credentialId: data.credentialId, method: data.method, registeredAt: new Date().toISOString() };
-    await sSet(STORAGE_KEYS.SESSION, user);
-    const ulist = (await sGet(STORAGE_KEYS.USERS, true)) || [];
-    const existing = ulist.findIndex(u => u.phone === data.phone);
-    if (existing >= 0) ulist[existing] = user; else ulist.push(user);
-    await sSet(STORAGE_KEYS.USERS, ulist, true);
-    await sSet(STORAGE_KEYS.CREDENTIALS, { phone: data.phone, credentialId: data.credentialId });
+    const user = await api.post("/api/auth/register", {
+      phone: data.phone,
+      name: data.name,
+      credentialId: data.credentialId,
+      method: data.method,
+    });
+    localStorage.setItem(SESSION_KEY, JSON.stringify(user));
     setCurrentUser(user);
     setSavedUser(user);
-    setUsers(ulist);
     setForceNewUser(false);
+    // Refresh member list
+    const members = await api.get("/api/members");
+    setUsers(members);
   };
 
   // ---- Login (returning) ----
@@ -774,30 +777,26 @@ export default function App() {
 
   // ---- Read ----
   const handleRead = async (msgId) => {
-    const list = (await sGet(STORAGE_KEYS.READS_PREFIX + msgId, true)) || [];
+    const list = readMap[msgId] || [];
     if (!list.find(r => r.phone === currentUser.phone)) {
-      list.push({ phone: currentUser.phone, name: currentUser.name, readAt: new Date().toISOString() });
-      await sSet(STORAGE_KEYS.READS_PREFIX + msgId, list, true);
-      setReadMap(prev => ({ ...prev, [msgId]: list }));
+      await api.post(`/api/messages/${msgId}/read`, { phone: currentUser.phone });
+      const updated = [...list, { phone: currentUser.phone, name: currentUser.name, readAt: new Date().toISOString() }];
+      setReadMap(prev => ({ ...prev, [msgId]: updated }));
     }
   };
 
   // ---- Send ----
   const handleSend = async (data) => {
-    const msg = { id: generateId(), ...data, createdAt: new Date().toISOString() };
-    const msgs = [msg, ...messages];
-    await sSet(STORAGE_KEYS.MESSAGES, msgs, true);
-    await sSet(STORAGE_KEYS.READS_PREFIX + msg.id, [], true);
-    setMessages(msgs);
+    const msg = await api.post("/api/messages", data);
+    setMessages(prev => [msg, ...prev]);
     setReadMap(prev => ({ ...prev, [msg.id]: [] }));
     setShowCompose(false);
   };
 
   // ---- Delete ----
   const handleDelete = async (id) => {
-    const msgs = messages.filter(m => m.id !== id);
-    await sSet(STORAGE_KEYS.MESSAGES, msgs, true);
-    setMessages(msgs);
+    await api.del(`/api/messages/${id}`);
+    setMessages(prev => prev.filter(m => m.id !== id));
   };
 
   if (loading) {
@@ -855,7 +854,7 @@ export default function App() {
             {!isAdmin && unread > 0 && (
               <span style={{ background: "#ef4444", color: "#fff", borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{unread}件</span>
             )}
-            <button onClick={() => { setCurrentUser(null); setIsAdmin(false); setSavedUser(null); setForceNewUser(false); }}
+            <button onClick={() => { localStorage.removeItem(SESSION_KEY); setCurrentUser(null); setIsAdmin(false); setSavedUser(null); setForceNewUser(false); }}
               style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 12, cursor: "pointer" }}>
               ログアウト
             </button>
