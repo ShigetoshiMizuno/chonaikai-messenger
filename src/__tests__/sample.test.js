@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import jwt from 'jsonwebtoken'
+import webpush from 'web-push'
 
 // 電話番号フォーマットのユーティリティ（将来切り出し予定）
 function normalizePhone(phone) {
@@ -50,5 +52,57 @@ describe('generateId', () => {
   it('base36文字列で構成される', () => {
     const id = generateId()
     expect(id).toMatch(/^[0-9a-z]+$/)
+  })
+})
+
+// ============================================
+// JWT トークン テスト
+// ============================================
+describe('JWT トークン', () => {
+  const secret = 'test-secret'
+
+  it('ペイロードを正しくエンコード・デコードする', () => {
+    const payload = { phone: '09012345678', name: '田中太郎', role: 'member' }
+    const token = jwt.sign(payload, secret, { expiresIn: '7d' })
+    const decoded = jwt.verify(token, secret)
+    expect(decoded.phone).toBe('09012345678')
+    expect(decoded.name).toBe('田中太郎')
+    expect(decoded.role).toBe('member')
+  })
+
+  it('不正なシークレットで検証に失敗する', () => {
+    const token = jwt.sign({ phone: '09012345678' }, secret)
+    expect(() => jwt.verify(token, 'wrong-secret')).toThrow()
+  })
+
+  it('有効期限切れトークンを拒否する', () => {
+    const token = jwt.sign({ phone: '09012345678' }, secret, { expiresIn: '-1s' })
+    expect(() => jwt.verify(token, secret)).toThrow(/expired/)
+  })
+})
+
+// ============================================
+// VAPID キー テスト
+// ============================================
+describe('VAPID キー生成', () => {
+  it('publicKey と privateKey のペアを生成する', () => {
+    const keys = webpush.generateVAPIDKeys()
+    expect(keys).toHaveProperty('publicKey')
+    expect(keys).toHaveProperty('privateKey')
+    expect(typeof keys.publicKey).toBe('string')
+    expect(typeof keys.privateKey).toBe('string')
+  })
+
+  it('Base64url形式の文字列を生成する', () => {
+    const keys = webpush.generateVAPIDKeys()
+    // Base64url: alphanumeric + - _ (no + / =)
+    expect(keys.publicKey).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(keys.privateKey).toMatch(/^[A-Za-z0-9_-]+$/)
+  })
+
+  it('毎回異なるキーペアを生成する', () => {
+    const keys1 = webpush.generateVAPIDKeys()
+    const keys2 = webpush.generateVAPIDKeys()
+    expect(keys1.publicKey).not.toBe(keys2.publicKey)
   })
 })

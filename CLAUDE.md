@@ -1,5 +1,17 @@
 # 町内会メッセンジャー - Claude Code 引き継ぎ資料
 
+## 自動読み込み & Memory Rules (Non-Negotiable)
+
+- .claude/handovers/ 内の handover-*.md があれば、**最新の日付のもの**を自動で最初に読み込み。
+- セッション開始時に「最新HANDOVER（handover-YYYY-MM-DD.md）を読み込みました。ブランチxxx、優先タスク…」と報告。
+- memory.md / key-learnings.md が存在したら、それも優先読み込み（長期累積知識）。
+- Gotchas / Learningsは常に尊重。矛盾したら即確認。
+- コンテキストが70%超えたら /handover を提案。
+- secrets / tokens は絶対にHANDOVERやmemoryに書かない。
+
+## その他永続ルール
+（あなたのコーディングスタイル、避けるパターン、好みなどをここに）
+
 ## プロジェクト概要
 
 町内会（自治会）向けのメッセージ一括配布Webアプリケーション。

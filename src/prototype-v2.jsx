@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { startRegistration, startAuthentication } from "@simplewebauthn/browser";
 
 // ============================================
 // 町内会メッセンジャー v2
@@ -8,22 +9,30 @@ import { useState, useEffect } from "react";
 const SESSION_KEY = "chonaikai-v2:session";
 const ADMIN_PIN = "1234";
 
-// ---- API Helper ----
+// ---- API Helper (with JWT token management) ----
 const api = {
+  _token: null,
+  setToken(t) { this._token = t; },
+  getToken() { return this._token; },
+  _headers() {
+    const h = { "Content-Type": "application/json" };
+    if (this._token) h["Authorization"] = `Bearer ${this._token}`;
+    return h;
+  },
   async get(path) {
-    const res = await fetch(path);
+    const res = await fetch(path, { headers: this._headers() });
     return res.json();
   },
   async post(path, body) {
     const res = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this._headers(),
       body: JSON.stringify(body),
     });
     return res.json();
   },
   async del(path) {
-    const res = await fetch(path, { method: "DELETE" });
+    const res = await fetch(path, { method: "DELETE", headers: this._headers() });
     return res.json();
   },
 };
@@ -66,90 +75,83 @@ const CATEGORIES = [
 ];
 
 // ============================================
-// WebAuthn Helpers (simulated for demo)
+// WebAuthn Helpers (real API + fallback)
 // ============================================
-// Real WebAuthn requires a server. Here we simulate
-// the flow to demonstrate UX. In production, replace
-// with actual navigator.credentials.create/get calls.
 
 function checkWebAuthnSupport() {
   return !!(window.PublicKeyCredential);
 }
 
-async function simulateWebAuthnRegister(phone, name) {
-  // In production:
-  // 1. Server sends challenge
-  // 2. navigator.credentials.create({publicKey: {...}})
-  // 3. Send attestation to server
-  // 4. Server stores public key
-
-  // Simulated: check if real WebAuthn is available
+async function webauthnRegister(phone, name) {
   const supported = checkWebAuthnSupport();
 
   if (supported) {
     try {
-      // Attempt real WebAuthn registration
-      const challenge = new Uint8Array(32);
-      crypto.getRandomValues(challenge);
-      const userId = new TextEncoder().encode(phone);
+      // 1. Get registration options from server
+      const options = await api.post("/api/auth/register/begin", { phone, name });
+      if (options.error) throw new Error(options.error);
 
-      const credential = await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: "町内会メッセンジャー", id: location.hostname },
-          user: { id: userId, name: phone, displayName: name },
-          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-          authenticatorSelection: {
-            authenticatorAttachment: "platform",
-            userVerification: "required",
-            residentKey: "required",
-          },
-          timeout: 60000,
-        },
+      // 2. Create credential via browser WebAuthn API
+      const attestation = await startRegistration(options);
+
+      // 3. Send attestation to server for verification
+      const result = await api.post("/api/auth/register/complete", {
+        phone, name, response: attestation,
       });
+      if (result.error) throw new Error(result.error);
+
+      // 4. Save JWT token
+      api.setToken(result.token);
 
       return {
         success: true,
-        credentialId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
+        token: result.token,
+        user: result.user,
         method: "webauthn",
       };
     } catch (e) {
-      console.log("WebAuthn failed, using simulation:", e.message);
+      console.log("WebAuthn registration failed, using simulation:", e.message);
     }
   }
 
-  // Fallback: simulate biometric prompt
+  // Fallback: simulated biometric for demo / unsupported browsers
   return new Promise((resolve) => {
     setTimeout(() => {
       resolve({
         success: true,
-        credentialId: "sim_" + generateId(),
+        token: null,
+        user: null,
         method: "simulated",
       });
     }, 1500);
   });
 }
 
-async function simulateWebAuthnLogin(phone) {
+async function webauthnLogin(phone) {
   const supported = checkWebAuthnSupport();
 
   if (supported) {
     try {
-      const challenge = new Uint8Array(32);
-      crypto.getRandomValues(challenge);
+      // 1. Get authentication options from server
+      const options = await api.post("/api/auth/login/begin", { phone });
+      if (options.error) throw new Error(options.error);
 
-      const assertion = await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          rpId: location.hostname,
-          userVerification: "required",
-          timeout: 60000,
-        },
+      // 2. Get assertion via browser WebAuthn API
+      const assertion = await startAuthentication(options);
+
+      // 3. Send assertion to server for verification
+      const result = await api.post("/api/auth/login/complete", {
+        phone, response: assertion,
       });
+      if (result.error) throw new Error(result.error);
+
+      // 4. Save JWT token
+      api.setToken(result.token);
 
       return {
         success: true,
-        credentialId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))),
+        token: result.token,
+        user: result.user,
         method: "webauthn",
       };
     } catch (e) {
@@ -157,9 +159,41 @@ async function simulateWebAuthnLogin(phone) {
     }
   }
 
+  // Fallback
   return new Promise((resolve) => {
-    setTimeout(() => resolve({ success: true, method: "simulated" }), 1200);
+    setTimeout(() => resolve({ success: true, token: null, user: null, method: "simulated" }), 1200);
   });
+}
+
+// ---- Push notification subscription ----
+async function subscribeToPush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    const { key } = await api.get("/api/push/vapidPublicKey");
+    if (!key) return;
+
+    // Convert VAPID key to Uint8Array
+    const urlBase64ToUint8Array = (base64String) => {
+      const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+      const rawData = atob(base64);
+      return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+    };
+
+    const subscription = await registration.pushManager.subscribe({
+      userVisuallyShown: true,
+      applicationServerKey: urlBase64ToUint8Array(key),
+    });
+
+    await api.post("/api/push/subscribe", { subscription: subscription.toJSON() });
+    console.log("Push subscription registered");
+  } catch (e) {
+    console.log("Push subscription failed:", e.message);
+  }
 }
 
 // ============================================
@@ -242,14 +276,15 @@ function RegisterScreen({ onRegister, onAdminLogin }) {
 
   const handleBiometricRegister = async () => {
     setShowBiometric(true);
-    const result = await simulateWebAuthnRegister(phone, name);
+    const result = await webauthnRegister(phone.replace(/\D/g, ""), name.trim());
     if (result.success) {
       setTimeout(() => {
         setShowBiometric(false);
         onRegister({
           phone: phone.replace(/\D/g, ""),
           name: name.trim(),
-          credentialId: result.credentialId,
+          token: result.token,
+          user: result.user,
           method: result.method,
         });
       }, 500);
@@ -506,11 +541,11 @@ function LoginScreen({ user, onLogin, onNewUser }) {
 
   const handleLogin = async () => {
     setShowBiometric(true);
-    const result = await simulateWebAuthnLogin(user.phone);
+    const result = await webauthnLogin(user.phone);
     if (result.success) {
       setTimeout(() => {
         setShowBiometric(false);
-        onLogin(user);
+        onLogin({ ...user, token: result.token, ...(result.user || {}) });
       }, 300);
     }
   };
@@ -724,7 +759,14 @@ export default function App() {
     (async () => {
       try {
         const raw = localStorage.getItem(SESSION_KEY);
-        if (raw) setSavedUser(JSON.parse(raw));
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          setSavedUser(parsed);
+          // Restore JWT token if available
+          if (parsed.token) {
+            api.setToken(parsed.token);
+          }
+        }
       } catch {}
 
       try {
@@ -755,23 +797,45 @@ export default function App() {
 
   // ---- Register ----
   const handleRegister = async (data) => {
-    const user = await api.post("/api/auth/register", {
-      phone: data.phone,
-      name: data.name,
-      credentialId: data.credentialId,
-      method: data.method,
-    });
-    localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    let user;
+    if (data.token && data.user) {
+      // Real WebAuthn: server already registered, we have JWT + user
+      api.setToken(data.token);
+      user = data.user;
+    } else {
+      // Simulated fallback: register via simple endpoint (no WebAuthn)
+      user = await api.post("/api/auth/register/begin", { phone: data.phone, name: data.name });
+      // For simulated mode, create a basic member record without WebAuthn
+      // (server will return options, but we just need member created)
+      user = { phone: data.phone, name: data.name, method: data.method };
+    }
+    const session = { ...user, token: data.token || null };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     setCurrentUser(user);
-    setSavedUser(user);
+    setSavedUser(session);
     setForceNewUser(false);
-    // Refresh member list
-    const members = await api.get("/api/members");
-    setUsers(members);
+    // Subscribe to push notifications
+    if (data.token) {
+      subscribeToPush();
+    }
+    // Refresh data
+    try {
+      const d = await api.get("/api/messages");
+      setMessages(d.messages || []);
+      setReadMap(d.readMap || {});
+      setUsers(d.members || []);
+    } catch {}
   };
 
   // ---- Login (returning) ----
   const handleLogin = async (user) => {
+    if (user.token) {
+      api.setToken(user.token);
+      const session = { ...user };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      setSavedUser(session);
+      subscribeToPush();
+    }
     setCurrentUser(user);
   };
 
@@ -779,7 +843,7 @@ export default function App() {
   const handleRead = async (msgId) => {
     const list = readMap[msgId] || [];
     if (!list.find(r => r.phone === currentUser.phone)) {
-      await api.post(`/api/messages/${msgId}/read`, { phone: currentUser.phone });
+      await api.post(`/api/messages/${msgId}/read`, {});
       const updated = [...list, { phone: currentUser.phone, name: currentUser.name, readAt: new Date().toISOString() }];
       setReadMap(prev => ({ ...prev, [msgId]: updated }));
     }
@@ -854,7 +918,7 @@ export default function App() {
             {!isAdmin && unread > 0 && (
               <span style={{ background: "#ef4444", color: "#fff", borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{unread}件</span>
             )}
-            <button onClick={() => { localStorage.removeItem(SESSION_KEY); setCurrentUser(null); setIsAdmin(false); setSavedUser(null); setForceNewUser(false); }}
+            <button onClick={() => { localStorage.removeItem(SESSION_KEY); api.setToken(null); setCurrentUser(null); setIsAdmin(false); setSavedUser(null); setForceNewUser(false); }}
               style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 12, cursor: "pointer" }}>
               ログアウト
             </button>
