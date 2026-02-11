@@ -7,7 +7,6 @@ import { startRegistration, startAuthentication } from "@simplewebauthn/browser"
 // ============================================
 
 const SESSION_KEY = "chonaikai-v2:session";
-const ADMIN_PIN = "1234";
 
 // ---- API Helper (with JWT token management) ----
 const api = {
@@ -26,6 +25,14 @@ const api = {
   async post(path, body) {
     const res = await fetch(path, {
       method: "POST",
+      headers: this._headers(),
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  },
+  async patch(path, body) {
+    const res = await fetch(path, {
+      method: "PATCH",
       headers: this._headers(),
       body: JSON.stringify(body),
     });
@@ -252,7 +259,7 @@ function BiometricOverlay({ type, onComplete }) {
 }
 
 // ---- Registration Screen ----
-function RegisterScreen({ onRegister, onAdminLogin }) {
+function RegisterScreen({ onRegister }) {
   const [step, setStep] = useState("phone"); // phone → name → biometric → done
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -522,14 +529,6 @@ function RegisterScreen({ onRegister, onAdminLogin }) {
           )}
         </div>
 
-        {/* Admin link */}
-        <button onClick={onAdminLogin}
-          style={{
-            display: "block", margin: "24px auto 0", padding: "8px 20px",
-            borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)",
-            background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.4)",
-            fontSize: 12, cursor: "pointer", backdropFilter: "blur(4px)",
-          }}>🔐 管理者ログイン</button>
       </div>
     </div>
   );
@@ -602,44 +601,6 @@ function LoginScreen({ user, onLogin, onNewUser }) {
             width: "100%", padding: 12, borderRadius: 14, border: "1px solid #e2e8f0",
             background: "#fff", color: "#64748b", fontSize: 13, cursor: "pointer",
           }}>別のアカウントで登録</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---- Admin Login ----
-function AdminLoginScreen({ onLogin, onBack }) {
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState(false);
-
-  const go = () => {
-    if (pin === ADMIN_PIN) onLogin();
-    else { setErr(true); setTimeout(() => setErr(false), 2000); }
-  };
-
-  return (
-    <div style={{
-      position: "fixed", inset: 0,
-      background: "linear-gradient(160deg, #0c1929 0%, #1a3352 40%, #234567 70%, #0c1929 100%)",
-      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: 16,
-    }}>
-      <div style={{ background: "#fff", borderRadius: 24, padding: "36px 28px", width: "100%", maxWidth: 360, textAlign: "center" }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>🔐</div>
-        <h2 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 800, color: "#1e293b" }}>管理者ログイン</h2>
-        <p style={{ fontSize: 13, color: "#64748b", marginBottom: 24 }}>
-          PINを入力してください<br />
-          <span style={{ fontSize: 11, color: "#94a3b8" }}>（デモ: 1234）</span>
-        </p>
-        <input type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN"
-          maxLength={8} style={{
-            width: "100%", padding: 14, borderRadius: 12, border: err ? "2px solid #ef4444" : "2px solid #e2e8f0",
-            fontSize: 24, textAlign: "center", letterSpacing: 8, outline: "none", boxSizing: "border-box", marginBottom: 8,
-          }} onKeyDown={(e) => e.key === "Enter" && go()} />
-        {err && <p style={{ color: "#ef4444", fontSize: 12, margin: "4px 0 12px" }}>PINが正しくありません</p>}
-        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button onClick={onBack} style={{ flex: 1, padding: 12, borderRadius: 12, border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>戻る</button>
-          <button onClick={go} style={{ flex: 1, padding: 12, borderRadius: 12, border: "none", background: "linear-gradient(135deg, #2563eb, #1d4ed8)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>ログイン</button>
         </div>
       </div>
     </div>
@@ -744,8 +705,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [savedUser, setSavedUser] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [messages, setMessages] = useState([]);
   const [readMap, setReadMap] = useState({});
   const [users, setUsers] = useState([]);
@@ -753,6 +712,8 @@ export default function App() {
   const [filterCat, setFilterCat] = useState("all");
   const [adminTab, setAdminTab] = useState("messages");
   const [forceNewUser, setForceNewUser] = useState(false);
+
+  const isAdmin = currentUser?.role === "admin";
 
   // ---- Init ----
   useEffect(() => {
@@ -783,7 +744,7 @@ export default function App() {
 
   // ---- Polling ----
   useEffect(() => {
-    if (!currentUser && !isAdmin) return;
+    if (!currentUser) return;
     const iv = setInterval(async () => {
       try {
         const data = await api.get("/api/messages");
@@ -793,7 +754,7 @@ export default function App() {
       } catch {}
     }, 5000);
     return () => clearInterval(iv);
-  }, [currentUser, isAdmin]);
+  }, [currentUser]);
 
   // ---- Register ----
   const handleRegister = async (data) => {
@@ -875,14 +836,11 @@ export default function App() {
   }
 
   // ---- Auth screens ----
-  if (!currentUser && !isAdmin) {
-    if (showAdminLogin) {
-      return <AdminLoginScreen onLogin={() => { setIsAdmin(true); setShowAdminLogin(false); }} onBack={() => setShowAdminLogin(false)} />;
-    }
+  if (!currentUser) {
     if (savedUser && !forceNewUser) {
       return <LoginScreen user={savedUser} onLogin={handleLogin} onNewUser={() => setForceNewUser(true)} />;
     }
-    return <RegisterScreen onRegister={handleRegister} onAdminLogin={() => setShowAdminLogin(true)} />;
+    return <RegisterScreen onRegister={handleRegister} />;
   }
 
   // ---- Main Screen ----
@@ -910,7 +868,7 @@ export default function App() {
             <div>
               <div style={{ fontSize: 16, fontWeight: 800 }}>町内会メッセンジャー</div>
               <div style={{ fontSize: 11, opacity: 0.6 }}>
-                {isAdmin ? "👑 管理者モード" : `👤 ${currentUser?.name} ・ 📱 ${formatPhone(currentUser?.phone || "")}`}
+                {isAdmin ? `👑 管理者 ${currentUser?.name}` : `👤 ${currentUser?.name} ・ 📱 ${formatPhone(currentUser?.phone || "")}`}
               </div>
             </div>
           </div>
@@ -918,7 +876,7 @@ export default function App() {
             {!isAdmin && unread > 0 && (
               <span style={{ background: "#ef4444", color: "#fff", borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{unread}件</span>
             )}
-            <button onClick={() => { localStorage.removeItem(SESSION_KEY); api.setToken(null); setCurrentUser(null); setIsAdmin(false); setSavedUser(null); setForceNewUser(false); }}
+            <button onClick={() => { localStorage.removeItem(SESSION_KEY); api.setToken(null); setCurrentUser(null); setSavedUser(null); setForceNewUser(false); }}
               style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 12, cursor: "pointer" }}>
               ログアウト
             </button>
@@ -1017,22 +975,41 @@ export default function App() {
                 display: "flex", alignItems: "center", gap: 12, animation: `slideIn 0.2s ease ${i * 0.05}s both`,
               }}>
                 <div style={{
-                  width: 40, height: 40, borderRadius: "50%", background: "linear-gradient(135deg, #3b82f6, #1d4ed8)",
+                  width: 40, height: 40, borderRadius: "50%",
+                  background: u.role === "admin" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #3b82f6, #1d4ed8)",
                   color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700,
-                }}>{u.name.charAt(0)}</div>
+                }}>{u.role === "admin" ? "👑" : u.name.charAt(0)}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b" }}>{u.name}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
+                    {u.name}
+                    {u.role === "admin" && <span style={{ fontSize: 10, color: "#d97706", marginLeft: 6, fontWeight: 600 }}>管理者</span>}
+                  </div>
                   <div style={{ fontSize: 12, color: "#64748b" }}>📱 {formatPhone(u.phone)}</div>
                   <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
                     <span>{u.method === "webauthn" ? "🔐 WebAuthn認証済" : "👆 生体認証済(デモ)"}</span>
                     <span>・{formatDate(u.registeredAt)}</span>
                   </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#059669" }}>
-                    {messages.filter(m => (readMap[m.id] || []).find(r => r.phone === u.phone)).length}/{messages.length}
+                <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                  <div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#059669" }}>
+                      {messages.filter(m => (readMap[m.id] || []).find(r => r.phone === u.phone)).length}/{messages.length}
+                    </span>
+                    <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 2 }}>既読</span>
                   </div>
-                  <div style={{ fontSize: 10, color: "#94a3b8" }}>既読</div>
+                  {u.phone !== currentUser?.phone && (
+                    <button onClick={async () => {
+                      const newRole = u.role === "admin" ? "member" : "admin";
+                      if (!confirm(`${u.name} を${newRole === "admin" ? "管理者に昇格" : "一般会員に変更"}しますか？`)) return;
+                      await api.patch(`/api/members/${u.id}/role`, { role: newRole });
+                      setUsers(prev => prev.map(m => m.id === u.id ? { ...m, role: newRole } : m));
+                    }} style={{
+                      padding: "3px 8px", borderRadius: 6, border: "1px solid #e2e8f0",
+                      background: u.role === "admin" ? "#fef3c7" : "#f0f9ff",
+                      color: u.role === "admin" ? "#92400e" : "#1e40af",
+                      fontSize: 10, cursor: "pointer", fontWeight: 600,
+                    }}>{u.role === "admin" ? "権限解除" : "管理者に"}</button>
+                  )}
                 </div>
               </div>
             ))}

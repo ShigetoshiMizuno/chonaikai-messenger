@@ -13,6 +13,7 @@ const ORIGIN = process.env.ORIGIN || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const JWT_EXPIRES_IN = '7d';
 const CHALLENGE_TTL_MINUTES = 5;
+const INITIAL_ADMIN_PHONE = process.env.INITIAL_ADMIN_PHONE || '';
 
 // ---- JWT ----
 function signToken(payload) {
@@ -100,19 +101,25 @@ async function registrationComplete(db, phone, name, response) {
   const publicKey = Buffer.from(credential.publicKey).toString('base64url');
   const counter = credential.counter || 0;
 
+  // Determine role: first user or INITIAL_ADMIN_PHONE gets admin
+  const memberCount = db.prepare('SELECT COUNT(*) as cnt FROM members WHERE is_active = 1').get().cnt;
+  const isInitialAdmin = (INITIAL_ADMIN_PHONE && phone === INITIAL_ADMIN_PHONE) || memberCount === 0;
+
   // Upsert member
-  const existing = db.prepare('SELECT id FROM members WHERE phone = ? AND is_active = 1').get(phone);
+  const existing = db.prepare('SELECT id, role FROM members WHERE phone = ? AND is_active = 1').get(phone);
   if (existing) {
+    const role = isInitialAdmin ? 'admin' : existing.role;
     db.prepare(`
       UPDATE members SET name = ?, credential_id = ?, public_key = ?, counter = ?,
-        auth_method = 'webauthn', updated_at = CURRENT_TIMESTAMP
+        auth_method = 'webauthn', role = ?, updated_at = CURRENT_TIMESTAMP
       WHERE phone = ?
-    `).run(name, credentialId, publicKey, counter, phone);
+    `).run(name, credentialId, publicKey, counter, role, phone);
   } else {
+    const role = isInitialAdmin ? 'admin' : 'member';
     db.prepare(`
-      INSERT INTO members (phone, name, credential_id, public_key, counter, auth_method)
-      VALUES (?, ?, ?, ?, ?, 'webauthn')
-    `).run(phone, name, credentialId, publicKey, counter);
+      INSERT INTO members (phone, name, credential_id, public_key, counter, auth_method, role)
+      VALUES (?, ?, ?, ?, ?, 'webauthn', ?)
+    `).run(phone, name, credentialId, publicKey, counter, role);
   }
 
   const member = db.prepare(

@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const { initDatabase } = require('./init-db');
 const auth = require('./auth');
 const push = require('./push');
@@ -10,6 +11,26 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// --- Rate Limiting ---
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15分
+  max: 20,                   // 15分あたり20回まで
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '認証試行回数が上限に達しました。しばらくしてからお試しください。' },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,  // 1分
+  max: 60,                   // 1分あたり60回
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'リクエスト回数が上限に達しました。' },
+});
+
+app.use('/api/auth/', authLimiter);
+app.use('/api/', apiLimiter);
 
 // --- Database ---
 const db = initDatabase();
@@ -48,7 +69,7 @@ const stmts = {
 
   // Members
   getMembers: db.prepare(`
-    SELECT id, phone, name, auth_method as method, credential_id as credentialId, created_at as registeredAt
+    SELECT id, phone, name, role, auth_method as method, credential_id as credentialId, created_at as registeredAt
     FROM members WHERE is_active = 1 ORDER BY created_at ASC
   `),
   getMemberByPhone: db.prepare(`
@@ -64,7 +85,7 @@ const stmts = {
 };
 
 // ============================================
-// JWT Auth Middleware
+// Auth Middleware
 // ============================================
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
@@ -77,6 +98,13 @@ function authMiddleware(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
+}
+
+function adminMiddleware(req, res, next) {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
 }
 
 // ============================================
@@ -190,8 +218,8 @@ app.get('/api/messages', (req, res) => {
   res.json({ messages, readMap, members });
 });
 
-// POST /api/messages — メッセージ作成（認証必須）
-app.post('/api/messages', authMiddleware, async (req, res) => {
+// POST /api/messages — メッセージ作成（管理者のみ）
+app.post('/api/messages', authMiddleware, adminMiddleware, async (req, res) => {
   const { title, body, priority, category } = req.body;
   if (!title || !body) {
     return res.status(400).json({ error: 'title and body are required' });
@@ -219,8 +247,8 @@ app.post('/api/messages', authMiddleware, async (req, res) => {
   res.json(msg);
 });
 
-// DELETE /api/messages/:id — メッセージ削除（認証必須）
-app.delete('/api/messages/:id', authMiddleware, (req, res) => {
+// DELETE /api/messages/:id — メッセージ削除（管理者のみ）
+app.delete('/api/messages/:id', authMiddleware, adminMiddleware, (req, res) => {
   stmts.deleteMessage.run(req.params.id);
   res.json({ ok: true });
 });
@@ -232,10 +260,24 @@ app.post('/api/messages/:id/read', authMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/members — 会員一覧（認証必須）
-app.get('/api/members', authMiddleware, (req, res) => {
+// GET /api/members — 会員一覧（管理者のみ）
+app.get('/api/members', authMiddleware, adminMiddleware, (req, res) => {
   const members = stmts.getMembers.all();
   res.json(members);
+});
+
+// PATCH /api/members/:id/role — ロール変更（管理者のみ）
+app.patch('/api/members/:id/role', authMiddleware, adminMiddleware, (req, res) => {
+  const { role } = req.body;
+  if (!role || !['member', 'admin'].includes(role)) {
+    return res.status(400).json({ error: 'role must be "member" or "admin"' });
+  }
+  const member = db.prepare('SELECT id, phone FROM members WHERE id = ? AND is_active = 1').get(req.params.id);
+  if (!member) {
+    return res.status(404).json({ error: 'Member not found' });
+  }
+  db.prepare('UPDATE members SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(role, member.id);
+  res.json({ ok: true, id: member.id, role });
 });
 
 // ============================================
