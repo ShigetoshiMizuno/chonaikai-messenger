@@ -1,15 +1,35 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
+const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { initDatabase } = require('./init-db');
 const auth = require('./auth');
 const push = require('./push');
+const { normalizePhone, isValidPhone } = require('./phone');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// --- Security Headers ---
+app.use(helmet({
+  contentSecurityPolicy: false, // CSPはフロントエンド側で制御
+}));
+
+// --- CORS ---
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || auth.ORIGIN).split(',').map(s => s.trim());
+app.use(cors({
+  origin(origin, callback) {
+    // 同一オリジン（origin=undefined）は許可
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS: origin not allowed'));
+    }
+  },
+  credentials: true,
+}));
+
 app.use(express.json());
 
 // --- Rate Limiting ---
@@ -114,9 +134,13 @@ function adminMiddleware(req, res, next) {
 // POST /api/auth/register/begin
 app.post('/api/auth/register/begin', async (req, res) => {
   try {
-    const { phone, name } = req.body;
+    const phone = normalizePhone(req.body.phone);
+    const name = req.body.name?.trim();
     if (!phone || !name) {
       return res.status(400).json({ error: 'phone and name are required' });
+    }
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ error: '有効な携帯電話番号を入力してください' });
     }
     const options = await auth.registrationBegin(db, phone, name);
     res.json(options);
@@ -129,7 +153,9 @@ app.post('/api/auth/register/begin', async (req, res) => {
 // POST /api/auth/register/complete
 app.post('/api/auth/register/complete', async (req, res) => {
   try {
-    const { phone, name, response } = req.body;
+    const phone = normalizePhone(req.body.phone);
+    const name = req.body.name?.trim();
+    const response = req.body.response;
     if (!phone || !name || !response) {
       return res.status(400).json({ error: 'phone, name, and response are required' });
     }
@@ -144,7 +170,7 @@ app.post('/api/auth/register/complete', async (req, res) => {
 // POST /api/auth/login/begin
 app.post('/api/auth/login/begin', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const phone = normalizePhone(req.body.phone);
     if (!phone) {
       return res.status(400).json({ error: 'phone is required' });
     }
@@ -159,7 +185,8 @@ app.post('/api/auth/login/begin', async (req, res) => {
 // POST /api/auth/login/complete
 app.post('/api/auth/login/complete', async (req, res) => {
   try {
-    const { phone, response } = req.body;
+    const phone = normalizePhone(req.body.phone);
+    const response = req.body.response;
     if (!phone || !response) {
       return res.status(400).json({ error: 'phone and response are required' });
     }

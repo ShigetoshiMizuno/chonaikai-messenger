@@ -1,16 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import jwt from 'jsonwebtoken'
 import webpush from 'web-push'
-
-// 電話番号フォーマットのユーティリティ（将来切り出し予定）
-function normalizePhone(phone) {
-  return phone.replace(/[-\s]/g, '')
-}
-
-function isValidPhone(phone) {
-  const normalized = normalizePhone(phone)
-  return /^0[789]0\d{8}$/.test(normalized)
-}
+import { normalizePhone, isValidPhone } from '../../server/phone.js'
 
 describe('電話番号バリデーション', () => {
   it('正しい携帯番号を受け入れる', () => {
@@ -30,6 +21,17 @@ describe('電話番号正規化', () => {
   it('ハイフンとスペースを除去する', () => {
     expect(normalizePhone('090-1234-5678')).toBe('09012345678')
     expect(normalizePhone('090 1234 5678')).toBe('09012345678')
+  })
+
+  it('+81形式を国内形式に変換する', () => {
+    expect(normalizePhone('+819012345678')).toBe('09012345678')
+    expect(normalizePhone('+81 90-1234-5678')).toBe('09012345678')
+  })
+
+  it('空文字やnullを安全に処理する', () => {
+    expect(normalizePhone('')).toBe('')
+    expect(normalizePhone(null)).toBe('')
+    expect(normalizePhone(undefined)).toBe('')
   })
 })
 
