@@ -20,7 +20,11 @@ function initVapidKeys() {
 
   console.log('--- VAPID keys auto-generated (set these in env for production) ---');
   console.log(`VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
-  console.log(`VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}`);
+  } else {
+    console.log('VAPID_PRIVATE_KEY=(hidden in production)');
+  }
   console.log('-------------------------------------------------------------------');
 }
 

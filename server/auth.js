@@ -8,6 +8,15 @@ const AUTH_SALT = process.env.AUTH_SALT || 'chonaikai-default-salt';
 const LOCKOUT_MINUTES = 30;
 const MAX_ATTEMPTS = 3;
 
+if (process.env.NODE_ENV === 'production') {
+  if (JWT_SECRET === 'dev-secret-change-me') {
+    console.warn('WARNING: JWT_SECRET is using default value. Set JWT_SECRET env var!');
+  }
+  if (AUTH_SALT === 'chonaikai-default-salt') {
+    console.warn('WARNING: AUTH_SALT is using default value. Set AUTH_SALT env var!');
+  }
+}
+
 // ---- 12干支 ----
 const ZODIAC_SIGNS = [
   'rat', 'ox', 'tiger', 'rabbit', 'dragon', 'snake',
