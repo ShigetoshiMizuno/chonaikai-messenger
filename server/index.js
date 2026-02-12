@@ -374,6 +374,8 @@ if (fs.existsSync(distPath)) {
   app.use(express.static(distPath, { index: 'index.html' }));
   app.use((req, res, next) => {
     if (req.path.startsWith('/api')) return next();
+    // Don't serve index.html for file requests (csv, json, images, etc.)
+    if (req.path.includes('.')) return next();
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
