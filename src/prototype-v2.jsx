@@ -630,7 +630,8 @@ function CsvImportModal({ onImport, onClose }) {
 
         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, lineHeight: 1.6 }}>
           CSVフォーマット: <code>電話番号,名前,干支</code><br />
-          干支は英語キー(rat,ox...)または日本語(子,丑...)に対応
+          干支は英語キー(rat,ox...)または日本語(子,丑...)に対応<br />
+          <a href="/sample-members.csv" download style={{ color: "#2563eb", textDecoration: "underline" }}>サンプルCSVをダウンロード</a>
         </div>
 
         <input
