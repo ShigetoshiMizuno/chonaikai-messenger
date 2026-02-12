@@ -1240,7 +1240,7 @@ export default function App() {
             const isRead = currentUser ? reads.some(r => r.phone === currentUser.phone) : false;
             return (
               <div key={msg.id} style={{ animation: `slideIn 0.2s ease ${i * 0.05}s both` }}>
-                <MessageCard msg={msg} isRead={isRead || isAdmin} onRead={handleRead} />
+                <MessageCard msg={msg} isRead={isRead} onRead={handleRead} />
               </div>
             );
           })
