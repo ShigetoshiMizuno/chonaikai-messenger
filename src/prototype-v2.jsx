@@ -581,13 +581,20 @@ function CsvImportModal({ onImport, onClose }) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target?.result;
+      const buf = ev.target?.result;
+      let text;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+      } catch {
+        text = new TextDecoder("shift_jis").decode(buf);
+      }
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
       setCsvText(text);
       setPreview(parseCsv(text));
       setError("");
       setResult(null);
     };
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   };
 
   const handleParse = () => {
@@ -631,7 +638,14 @@ function CsvImportModal({ onImport, onClose }) {
         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, lineHeight: 1.6 }}>
           CSVフォーマット: <code>電話番号,名前,干支</code><br />
           干支は英語キー(rat,ox...)または日本語(子,丑...)に対応<br />
-          <a href="/sample-members.csv" download style={{ color: "#2563eb", textDecoration: "underline" }}>サンプルCSVをダウンロード</a>
+          <a href="#" onClick={(ev) => {
+            ev.preventDefault();
+            const csv = "\uFEFF電話番号,名前,干支\n09012345678,山田太郎（1丁目）,辰\n08011112222,鈴木花子（2丁目）,うさぎ\n07033334444,田中一郎（3丁目）,dog\n09044445555,佐藤美智子（1丁目）,午\n08066667777,高橋健二（2丁目）,子\n07088889999,伊藤よし子（3丁目）,申\n09011223344,渡辺正男（1丁目）,寅\n08055667788,小林和子（2丁目）,いのしし\n07099001122,加藤勝（3丁目）,snake\n09033445566,吉田節子（1丁目）,丑\n";
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href = url; a.download = "sample-members.csv"; a.click();
+            URL.revokeObjectURL(url);
+          }} style={{ color: "#2563eb", textDecoration: "underline" }}>サンプルCSVをダウンロード</a>
         </div>
 
         <input
