@@ -1,6 +1,7 @@
 -- ============================================
 -- 町内会メッセンジャー データベーススキーマ
 -- SQLite / PostgreSQL 互換
+-- 認証方式: 電話番号 + 干支
 -- ============================================
 
 -- 会員テーブル
@@ -8,10 +9,8 @@ CREATE TABLE IF NOT EXISTS members (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   phone           VARCHAR(15) UNIQUE NOT NULL,     -- 電話番号（E.164推奨）
   name            VARCHAR(100) NOT NULL,            -- 表示名（例: 山田太郎（3丁目））
-  credential_id   TEXT,                             -- WebAuthn credential ID (base64url)
-  public_key      TEXT,                             -- WebAuthn 公開鍵 (base64url)
-  counter         INTEGER DEFAULT 0,               -- WebAuthn signature counter
-  auth_method     VARCHAR(20) DEFAULT 'webauthn',  -- webauthn / pin / none
+  zodiac          VARCHAR(10),                      -- 干支 (rat/ox/tiger/rabbit/dragon/snake/horse/sheep/monkey/rooster/dog/boar)
+  auth_hash       TEXT,                             -- SHA-256(SALT + phone + ':' + zodiac)
   role            VARCHAR(20) DEFAULT 'member',    -- member / admin
   is_active       BOOLEAN DEFAULT TRUE,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -39,14 +38,12 @@ CREATE TABLE IF NOT EXISTS reads (
   UNIQUE(message_id, member_id)
 );
 
--- WebAuthn チャレンジ（一時保存、5分有効）
-CREATE TABLE IF NOT EXISTS challenges (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  phone           VARCHAR(15) NOT NULL,
-  challenge       TEXT NOT NULL,
-  type            VARCHAR(20) NOT NULL,            -- registration / authentication
-  expires_at      DATETIME NOT NULL,
-  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+-- 認証試行テーブル（ブルートフォース対策）
+CREATE TABLE IF NOT EXISTS auth_attempts (
+  phone           VARCHAR(15) PRIMARY KEY,
+  attempts        INTEGER DEFAULT 0,
+  locked_until    DATETIME,
+  last_attempt    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Push通知サブスクリプション
@@ -69,16 +66,4 @@ CREATE INDEX IF NOT EXISTS idx_messages_priority ON messages(priority);
 CREATE INDEX IF NOT EXISTS idx_messages_category ON messages(category);
 CREATE INDEX IF NOT EXISTS idx_reads_message ON reads(message_id);
 CREATE INDEX IF NOT EXISTS idx_reads_member ON reads(member_id);
-CREATE INDEX IF NOT EXISTS idx_challenges_phone ON challenges(phone);
-CREATE INDEX IF NOT EXISTS idx_challenges_expires ON challenges(expires_at);
-
--- ============================================
--- 初期データ（管理者アカウント）
--- ※ 本番では WebAuthn 登録後に role を admin に更新
--- ============================================
--- INSERT INTO members (phone, name, role) VALUES ('09012345678', '管理者', 'admin');
-
--- ============================================
--- 期限切れチャレンジの自動削除（定期実行推奨）
--- ============================================
--- DELETE FROM challenges WHERE expires_at < CURRENT_TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_locked ON auth_attempts(locked_until);

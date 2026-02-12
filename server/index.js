@@ -22,7 +22,8 @@ app.use(helmet({
 }));
 
 // --- CORS ---
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || auth.ORIGIN).split(',').map(s => s.trim());
+const ORIGIN = process.env.ORIGIN || 'http://localhost:5173';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || ORIGIN).split(',').map(s => s.trim());
 app.use(cors({
   origin(origin, callback) {
     // 同一オリジン（origin=undefined）は許可
@@ -40,7 +41,7 @@ app.use(express.json());
 // --- Rate Limiting ---
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15分
-  max: 20,                   // 15分あたり20回まで
+  max: 5,                    // 15分あたり5回まで（干支は12択なので厳しく）
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: '認証試行回数が上限に達しました。しばらくしてからお試しください。' },
@@ -94,12 +95,15 @@ const stmts = {
 
   // Members
   getMembers: db.prepare(`
-    SELECT id, phone, name, role, auth_method as method, credential_id as credentialId, created_at as registeredAt
+    SELECT id, phone, name, role, zodiac, created_at as registeredAt
     FROM members WHERE is_active = 1 ORDER BY created_at ASC
   `),
   getMemberByPhone: db.prepare(`
-    SELECT id, phone, name, role, credential_id as credentialId, auth_method as method, created_at as registeredAt
+    SELECT id, phone, name, role, zodiac, created_at as registeredAt
     FROM members WHERE phone = ? AND is_active = 1
+  `),
+  deactivateMember: db.prepare(`
+    UPDATE members SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?
   `),
 
   // Push subscriptions
@@ -133,74 +137,123 @@ function adminMiddleware(req, res, next) {
 }
 
 // ============================================
-// WebAuthn Auth Routes
+// Auth Routes (干支認証)
 // ============================================
 
-// POST /api/auth/register/begin
-app.post('/api/auth/register/begin', async (req, res) => {
+// POST /api/auth/login — 電話番号 + 干支で認証
+app.post('/api/auth/login', (req, res) => {
   try {
     const phone = normalizePhone(req.body.phone);
-    const name = req.body.name?.trim();
-    if (!phone || !name) {
-      return res.status(400).json({ error: 'phone and name are required' });
+    const zodiac = req.body.zodiac?.trim()?.toLowerCase();
+    if (!phone || !zodiac) {
+      return res.status(400).json({ error: '電話番号と干支を入力してください' });
     }
     if (!isValidPhone(phone)) {
       return res.status(400).json({ error: '有効な携帯電話番号を入力してください' });
     }
-    const options = await auth.registrationBegin(db, phone, name);
-    res.json(options);
+    if (!auth.ZODIAC_SIGNS.includes(zodiac)) {
+      return res.status(400).json({ error: '無効な干支です' });
+    }
+    const result = auth.authenticate(db, phone, zodiac);
+    res.json(result);
   } catch (err) {
-    console.error('register/begin error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('auth/login error:', err.message);
+    res.status(401).json({ error: err.message });
   }
 });
 
-// POST /api/auth/register/complete
-app.post('/api/auth/register/complete', async (req, res) => {
+// POST /api/auth/verify — トークン検証（自動ログイン用）
+app.post('/api/auth/verify', (req, res) => {
+  const token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(400).json({ error: 'Token required' });
+  }
+  try {
+    const payload = auth.verifyToken(token);
+    // Fetch fresh user data
+    const member = stmts.getMemberByPhone.get(payload.phone);
+    if (!member) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+    // Re-sign a fresh token (extend expiry)
+    const newToken = auth.signToken({ phone: member.phone, name: member.name, role: member.role });
+    res.json({
+      token: newToken,
+      user: {
+        id: member.id,
+        phone: member.phone,
+        name: member.name,
+        role: member.role,
+        registeredAt: member.registeredAt,
+      },
+    });
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// ============================================
+// Admin: Member Management
+// ============================================
+
+// POST /api/admin/members — 管理者が会員を個別登録
+app.post('/api/admin/members', authMiddleware, adminMiddleware, (req, res) => {
   try {
     const phone = normalizePhone(req.body.phone);
     const name = req.body.name?.trim();
-    const response = req.body.response;
-    if (!phone || !name || !response) {
-      return res.status(400).json({ error: 'phone, name, and response are required' });
+    const zodiac = auth.normalizeZodiac(req.body.zodiac);
+    const role = req.body.role || 'member';
+
+    if (!phone || !name || !zodiac) {
+      return res.status(400).json({ error: '電話番号、名前、干支は必須です' });
     }
-    const result = await auth.registrationComplete(db, phone, name, response);
-    res.json(result);
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ error: '有効な携帯電話番号を入力してください' });
+    }
+    if (!['member', 'admin'].includes(role)) {
+      return res.status(400).json({ error: 'role は member または admin です' });
+    }
+
+    const member = auth.adminRegisterMember(db, phone, name, zodiac, role);
+    res.json(member);
   } catch (err) {
-    console.error('register/complete error:', err);
+    console.error('admin/members error:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
 
-// POST /api/auth/login/begin
-app.post('/api/auth/login/begin', async (req, res) => {
+// POST /api/admin/members/import — CSV一括インポート
+app.post('/api/admin/members/import', authMiddleware, adminMiddleware, (req, res) => {
   try {
-    const phone = normalizePhone(req.body.phone);
-    if (!phone) {
-      return res.status(400).json({ error: 'phone is required' });
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: 'rows配列が必要です' });
     }
-    const options = await auth.authenticationBegin(db, phone);
-    res.json(options);
+
+    // Normalize phones
+    const normalized = rows.map(r => ({
+      phone: normalizePhone(r.phone),
+      name: r.name?.trim(),
+      zodiac: r.zodiac?.trim(),
+      role: r.role || 'member',
+    }));
+
+    const results = auth.adminBulkImport(db, normalized);
+    res.json(results);
   } catch (err) {
-    console.error('login/begin error:', err);
+    console.error('admin/members/import error:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
 
-// POST /api/auth/login/complete
-app.post('/api/auth/login/complete', async (req, res) => {
-  try {
-    const phone = normalizePhone(req.body.phone);
-    const response = req.body.response;
-    if (!phone || !response) {
-      return res.status(400).json({ error: 'phone and response are required' });
-    }
-    const result = await auth.authenticationComplete(db, phone, response);
-    res.json(result);
-  } catch (err) {
-    console.error('login/complete error:', err);
-    res.status(400).json({ error: err.message });
+// DELETE /api/admin/members/:id — 会員無効化
+app.delete('/api/admin/members/:id', authMiddleware, adminMiddleware, (req, res) => {
+  const member = db.prepare('SELECT id, phone FROM members WHERE id = ? AND is_active = 1').get(req.params.id);
+  if (!member) {
+    return res.status(404).json({ error: 'Member not found' });
   }
+  stmts.deactivateMember.run(member.id);
+  res.json({ ok: true, id: member.id });
 });
 
 // ============================================

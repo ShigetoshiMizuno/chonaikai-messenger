@@ -1,12 +1,27 @@
-import { useState, useEffect } from "react";
-import { startRegistration, startAuthentication } from "@simplewebauthn/browser";
+import { useState, useEffect, useRef } from "react";
 
 // ============================================
 // 町内会メッセンジャー v2
-// 電話番号 + WebAuthn (Face ID / 指紋) 認証
+// 電話番号 + 干支（えと）認証
 // ============================================
 
 const SESSION_KEY = "chonaikai-v2:session";
+
+// ---- 干支定義 ----
+const ZODIAC_SIGNS = [
+  { key: "rat", emoji: "🐭", label: "子" },
+  { key: "ox", emoji: "🐮", label: "丑" },
+  { key: "tiger", emoji: "🐯", label: "寅" },
+  { key: "rabbit", emoji: "🐰", label: "卯" },
+  { key: "dragon", emoji: "🐲", label: "辰" },
+  { key: "snake", emoji: "🐍", label: "巳" },
+  { key: "horse", emoji: "🐴", label: "午" },
+  { key: "sheep", emoji: "🐏", label: "未" },
+  { key: "monkey", emoji: "🐵", label: "申" },
+  { key: "rooster", emoji: "🐔", label: "酉" },
+  { key: "dog", emoji: "🐶", label: "戌" },
+  { key: "boar", emoji: "🐗", label: "亥" },
+];
 
 // ---- API Helper (with JWT token management) ----
 const api = {
@@ -62,9 +77,6 @@ function formatPhone(p) {
   if (d.length === 11) return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
   return p;
 }
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
 
 const PRIORITY = {
   urgent: { label: "緊急", color: "#dc2626", bg: "#fef2f2", icon: "🚨" },
@@ -80,97 +92,6 @@ const CATEGORIES = [
   { id: "safety", label: "防犯", icon: "🔒" },
   { id: "other", label: "その他", icon: "📎" },
 ];
-
-// ============================================
-// WebAuthn Helpers (real API + fallback)
-// ============================================
-
-function checkWebAuthnSupport() {
-  return !!(window.PublicKeyCredential);
-}
-
-async function webauthnRegister(phone, name) {
-  const supported = checkWebAuthnSupport();
-
-  if (supported) {
-    try {
-      // 1. Get registration options from server
-      const options = await api.post("/api/auth/register/begin", { phone, name });
-      if (options.error) throw new Error(options.error);
-
-      // 2. Create credential via browser WebAuthn API
-      const attestation = await startRegistration(options);
-
-      // 3. Send attestation to server for verification
-      const result = await api.post("/api/auth/register/complete", {
-        phone, name, response: attestation,
-      });
-      if (result.error) throw new Error(result.error);
-
-      // 4. Save JWT token
-      api.setToken(result.token);
-
-      return {
-        success: true,
-        token: result.token,
-        user: result.user,
-        method: "webauthn",
-      };
-    } catch (e) {
-      console.log("WebAuthn registration failed, using simulation:", e.message);
-    }
-  }
-
-  // Fallback: simulated biometric for demo / unsupported browsers
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        success: true,
-        token: null,
-        user: null,
-        method: "simulated",
-      });
-    }, 1500);
-  });
-}
-
-async function webauthnLogin(phone) {
-  const supported = checkWebAuthnSupport();
-
-  if (supported) {
-    try {
-      // 1. Get authentication options from server
-      const options = await api.post("/api/auth/login/begin", { phone });
-      if (options.error) throw new Error(options.error);
-
-      // 2. Get assertion via browser WebAuthn API
-      const assertion = await startAuthentication(options);
-
-      // 3. Send assertion to server for verification
-      const result = await api.post("/api/auth/login/complete", {
-        phone, response: assertion,
-      });
-      if (result.error) throw new Error(result.error);
-
-      // 4. Save JWT token
-      api.setToken(result.token);
-
-      return {
-        success: true,
-        token: result.token,
-        user: result.user,
-        method: "webauthn",
-      };
-    } catch (e) {
-      console.log("WebAuthn login failed:", e.message);
-    }
-  }
-
-  // Fallback
-  return new Promise((resolve) => {
-    setTimeout(() => resolve({ success: true, token: null, user: null, method: "simulated" }), 1200);
-  });
-}
 
 // ---- Push notification subscription ----
 async function subscribeToPush() {
@@ -217,84 +138,80 @@ function Badge({ children, color = "#2563eb", bg = "#eff6ff" }) {
   );
 }
 
-// ---- Biometric Animation ----
-function BiometricOverlay({ type, onComplete }) {
-  const [phase, setPhase] = useState("scanning");
-
-  useEffect(() => {
-    const t1 = setTimeout(() => setPhase("success"), 1500);
-    const t2 = setTimeout(() => onComplete?.(), 2200);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, []);
-
+// ---- Zodiac Grid Selector ----
+function ZodiacGrid({ selected, onSelect, disabled }) {
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      zIndex: 3000, backdropFilter: "blur(8px)",
+      display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10,
     }}>
-      <div style={{ textAlign: "center", color: "#fff" }}>
-        <div style={{
-          width: 120, height: 120, borderRadius: "50%", margin: "0 auto 24px",
-          border: phase === "success" ? "4px solid #22c55e" : "4px solid rgba(255,255,255,0.3)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: phase === "success" ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)",
-          transition: "all 0.4s",
-          animation: phase === "scanning" ? "bioPulse 1.2s infinite" : "none",
-        }}>
-          <span style={{ fontSize: 52 }}>
-            {phase === "success" ? "✓" : type === "face" ? "👤" : "👆"}
+      {ZODIAC_SIGNS.map((z) => (
+        <button
+          key={z.key}
+          onClick={() => !disabled && onSelect(z.key)}
+          disabled={disabled}
+          style={{
+            padding: "14px 4px", borderRadius: 14,
+            border: selected === z.key ? "3px solid #2563eb" : "2px solid #e2e8f0",
+            background: selected === z.key ? "#eff6ff" : "#fff",
+            cursor: disabled ? "not-allowed" : "pointer",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+            transition: "all 0.15s",
+            opacity: disabled ? 0.5 : 1,
+          }}
+        >
+          <span style={{ fontSize: 32 }}>{z.emoji}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: selected === z.key ? "#2563eb" : "#475569" }}>
+            {z.label}
           </span>
-        </div>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-          {phase === "success" ? "認証完了" : type === "face" ? "Face IDで認証中..." : "指紋を認証中..."}
-        </div>
-        <div style={{ fontSize: 13, opacity: 0.6 }}>
-          {phase === "success" ? "" : "デバイスの認証をお待ちください"}
-        </div>
-      </div>
-      <style>{`@keyframes bioPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); } 50% { box-shadow: 0 0 0 20px rgba(59,130,246,0); } }`}</style>
+        </button>
+      ))}
     </div>
   );
 }
 
-// ---- Registration Screen ----
-function RegisterScreen({ onRegister }) {
-  const [step, setStep] = useState("phone"); // phone → name → biometric → done
+// ---- Auth Screen (phone + zodiac) ----
+function AuthScreen({ onLogin }) {
+  const [step, setStep] = useState("phone"); // phone → zodiac
   const [phone, setPhone] = useState("");
-  const [name, setName] = useState("");
-  const [showBiometric, setShowBiometric] = useState(false);
+  const [zodiac, setZodiac] = useState(null);
   const [error, setError] = useState("");
-  const [webauthnSupported] = useState(checkWebAuthnSupport());
+  const [loading, setLoading] = useState(false);
 
   const phoneValid = phone.replace(/\D/g, "").length >= 10;
 
   const handlePhoneNext = () => {
     if (!phoneValid) { setError("電話番号を正しく入力してください"); return; }
     setError("");
-    setStep("name");
+    setStep("zodiac");
   };
 
-  const handleNameNext = () => {
-    if (!name.trim()) { setError("お名前を入力してください"); return; }
+  const handleZodiacSelect = async (key) => {
+    setZodiac(key);
+    setLoading(true);
     setError("");
-    setStep("biometric");
-  };
 
-  const handleBiometricRegister = async () => {
-    setShowBiometric(true);
-    const result = await webauthnRegister(phone.replace(/\D/g, ""), name.trim());
-    if (result.success) {
-      setTimeout(() => {
-        setShowBiometric(false);
-        onRegister({
-          phone: phone.replace(/\D/g, ""),
-          name: name.trim(),
-          token: result.token,
-          user: result.user,
-          method: result.method,
-        });
-      }, 500);
+    try {
+      const result = await api.post("/api/auth/login", {
+        phone: phone.replace(/\D/g, ""),
+        zodiac: key,
+      });
+
+      if (result.error) {
+        setError(result.error);
+        setZodiac(null);
+        setLoading(false);
+        return;
+      }
+
+      // Success
+      api.setToken(result.token);
+      const session = { ...result.user, token: result.token };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      onLogin(result.user, result.token);
+    } catch (e) {
+      setError("通信エラーが発生しました。もう一度お試しください。");
+      setZodiac(null);
+      setLoading(false);
     }
   };
 
@@ -319,11 +236,7 @@ function RegisterScreen({ onRegister }) {
         @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
       `}</style>
 
-      {showBiometric && <BiometricOverlay type="face" onComplete={() => {}} />}
-
-      <div style={{
-        animation: "fadeUp 0.5s ease", maxWidth: 420, width: "100%",
-      }}>
+      <div style={{ animation: "fadeUp 0.5s ease", maxWidth: 420, width: "100%" }}>
         {/* Logo */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <div style={{
@@ -336,7 +249,7 @@ function RegisterScreen({ onRegister }) {
             fontFamily: "'Noto Sans JP', sans-serif", letterSpacing: 1,
           }}>町内会メッセンジャー</h1>
           <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, marginTop: 6 }}>
-            パスワード不要・生体認証でかんたん参加
+            電話番号と干支でかんたんログイン
           </p>
         </div>
 
@@ -351,11 +264,10 @@ function RegisterScreen({ onRegister }) {
           }}>
             {[
               { id: "phone", label: "電話番号", num: "1" },
-              { id: "name", label: "お名前", num: "2" },
-              { id: "biometric", label: "生体認証", num: "3" },
+              { id: "zodiac", label: "干支", num: "2" },
             ].map((s, i) => {
               const active = s.id === step;
-              const done = (step === "name" && i === 0) || (step === "biometric" && i < 2);
+              const done = step === "zodiac" && i === 0;
               return (
                 <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{
@@ -369,7 +281,7 @@ function RegisterScreen({ onRegister }) {
                     fontSize: 12, fontWeight: 600,
                     color: active ? "#1e293b" : "#94a3b8",
                   }}>{s.label}</span>
-                  {i < 2 && <div style={{
+                  {i < 1 && <div style={{
                     width: 20, height: 2,
                     background: done ? "#22c55e" : "#e2e8f0",
                   }} />}
@@ -395,7 +307,7 @@ function RegisterScreen({ onRegister }) {
                 onKeyDown={(e) => e.key === "Enter" && handlePhoneNext()}
               />
               <p style={{ fontSize: 11, color: "#94a3b8", textAlign: "center", marginBottom: 20 }}>
-                この番号が会員IDになります（SMSは送信しません）
+                管理者に登録された電話番号を入力してください
               </p>
               {error && <p style={{ color: "#ef4444", fontSize: 12, textAlign: "center", marginBottom: 12 }}>{error}</p>}
               <button
@@ -413,8 +325,8 @@ function RegisterScreen({ onRegister }) {
             </div>
           )}
 
-          {/* Step: Name */}
-          {step === "name" && (
+          {/* Step: Zodiac */}
+          {step === "zodiac" && (
             <div style={{ animation: "fadeUp 0.3s ease" }}>
               <div style={{
                 textAlign: "center", marginBottom: 16, padding: "8px 14px",
@@ -424,183 +336,28 @@ function RegisterScreen({ onRegister }) {
                   📱 {formatPhone(phone)}
                 </span>
               </div>
-              <label style={{ fontSize: 13, fontWeight: 700, color: "#475569", display: "block", marginBottom: 8 }}>
-                👤 お名前（管理者に表示されます）
+              <label style={{ fontSize: 15, fontWeight: 700, color: "#1e293b", display: "block", marginBottom: 16, textAlign: "center" }}>
+                あなたの干支を選んでください
               </label>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例: 山田太郎（3丁目）"
-                style={{ ...inputBase, marginBottom: 20 }}
-                onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
-                onBlur={(e) => e.target.style.borderColor = "#e2e8f0"}
-                onKeyDown={(e) => e.key === "Enter" && handleNameNext()}
-              />
-              {error && <p style={{ color: "#ef4444", fontSize: 12, textAlign: "center", marginBottom: 12 }}>{error}</p>}
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => { setStep("phone"); setError(""); }}
-                  style={{ flex: 1, padding: 14, borderRadius: 14, border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
-                  ← 戻る
-                </button>
-                <button onClick={handleNameNext} disabled={!name.trim()}
-                  style={{
-                    flex: 2, padding: 14, borderRadius: 14, border: "none",
-                    background: name.trim() ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#e2e8f0",
-                    color: name.trim() ? "#fff" : "#94a3b8", fontSize: 15, fontWeight: 700,
-                    cursor: name.trim() ? "pointer" : "not-allowed",
-                    fontFamily: "'Noto Sans JP', sans-serif",
-                  }}>次へ →</button>
-              </div>
-            </div>
-          )}
 
-          {/* Step: Biometric */}
-          {step === "biometric" && (
-            <div style={{ animation: "fadeUp 0.3s ease", textAlign: "center" }}>
-              <div style={{
-                textAlign: "center", marginBottom: 20, padding: "10px 14px",
-                background: "#f0f7ff", borderRadius: 10,
-              }}>
-                <div style={{ fontSize: 13, color: "#3b82f6", fontWeight: 600 }}>
-                  📱 {formatPhone(phone)}
-                </div>
-                <div style={{ fontSize: 13, color: "#475569", fontWeight: 600 }}>
-                  👤 {name}
-                </div>
-              </div>
+              {error && <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginBottom: 12, fontWeight: 600 }}>{error}</p>}
 
-              <div style={{
-                width: 100, height: 100, borderRadius: "50%", margin: "0 auto 20px",
-                background: "linear-gradient(135deg, #eff6ff, #dbeafe)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                border: "3px solid #bfdbfe",
-              }}>
-                <span style={{ fontSize: 44 }}>
-                  {webauthnSupported ? "🔐" : "👆"}
-                </span>
-              </div>
+              <ZodiacGrid selected={zodiac} onSelect={handleZodiacSelect} disabled={loading} />
 
-              <h3 style={{ fontSize: 17, fontWeight: 800, color: "#1e293b", marginBottom: 8 }}>
-                生体認証を登録
-              </h3>
-              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 6, lineHeight: 1.6 }}>
-                Face ID・指紋認証でログインできるようになります。
-                <br />パスワードは不要です。
-              </p>
-
-              {webauthnSupported ? (
-                <div style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-                  color: "#059669", background: "#ecfdf5", marginBottom: 20,
-                }}>
-                  ✓ この端末は生体認証に対応しています
-                </div>
-              ) : (
-                <div style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-                  color: "#f59e0b", background: "#fffbeb", marginBottom: 20,
-                }}>
-                  ⚠ デモモードで動作します
+              {loading && (
+                <div style={{ textAlign: "center", marginTop: 16, color: "#64748b", fontSize: 14 }}>
+                  認証中...
                 </div>
               )}
 
-              <button
-                onClick={handleBiometricRegister}
-                style={{
-                  width: "100%", padding: 16, borderRadius: 14, border: "none",
-                  background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
-                  color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer",
-                  boxShadow: "0 6px 24px rgba(37,99,235,0.3)", marginBottom: 10,
-                  fontFamily: "'Noto Sans JP', sans-serif",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                }}
-              >
-                {webauthnSupported ? "🔐 Face ID / 指紋で登録" : "👆 生体認証で登録（デモ）"}
-              </button>
-
-              <button onClick={() => { setStep("name"); setError(""); }}
+              <button onClick={() => { setStep("phone"); setError(""); setZodiac(null); }}
                 style={{
                   width: "100%", padding: 12, borderRadius: 14, border: "1px solid #e2e8f0",
                   background: "#fff", color: "#64748b", fontSize: 14, fontWeight: 600, cursor: "pointer",
+                  marginTop: 16,
                 }}>← 戻る</button>
             </div>
           )}
-        </div>
-
-      </div>
-    </div>
-  );
-}
-
-// ---- Login Screen (returning user) ----
-function LoginScreen({ user, onLogin, onNewUser }) {
-  const [showBiometric, setShowBiometric] = useState(false);
-
-  const handleLogin = async () => {
-    setShowBiometric(true);
-    const result = await webauthnLogin(user.phone);
-    if (result.success) {
-      setTimeout(() => {
-        setShowBiometric(false);
-        onLogin({ ...user, token: result.token, ...(result.user || {}) });
-      }, 300);
-    }
-  };
-
-  return (
-    <div style={{
-      minHeight: "100vh",
-      background: "linear-gradient(160deg, #0c1929 0%, #1a3352 40%, #234567 70%, #0c1929 100%)",
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      padding: 20,
-    }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700;800;900&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-      `}</style>
-
-      {showBiometric && <BiometricOverlay type="face" />}
-
-      <div style={{ animation: "fadeUp 0.5s ease", maxWidth: 400, width: "100%", textAlign: "center" }}>
-        <div style={{ fontSize: 56, marginBottom: 16 }}>🏘️</div>
-        <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 900, marginBottom: 24, fontFamily: "'Noto Sans JP', sans-serif" }}>
-          おかえりなさい
-        </h1>
-
-        <div style={{
-          background: "#fff", borderRadius: 24, padding: "32px 28px",
-          boxShadow: "0 30px 80px rgba(0,0,0,0.4)",
-        }}>
-          <div style={{
-            width: 72, height: 72, borderRadius: "50%", margin: "0 auto 16px",
-            background: "linear-gradient(135deg, #3b82f6, #1d4ed8)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "#fff", fontSize: 28, fontWeight: 800,
-          }}>{user.name.charAt(0)}</div>
-
-          <div style={{ fontSize: 18, fontWeight: 800, color: "#1e293b", marginBottom: 4 }}>
-            {user.name}
-          </div>
-          <div style={{ fontSize: 14, color: "#64748b", marginBottom: 24 }}>
-            📱 {formatPhone(user.phone)}
-          </div>
-
-          <button onClick={handleLogin} style={{
-            width: "100%", padding: 16, borderRadius: 14, border: "none",
-            background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
-            color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer",
-            boxShadow: "0 6px 24px rgba(37,99,235,0.3)", marginBottom: 12,
-            fontFamily: "'Noto Sans JP', sans-serif",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-          }}>🔐 Face ID / 指紋でログイン</button>
-
-          <button onClick={onNewUser} style={{
-            width: "100%", padding: 12, borderRadius: 14, border: "1px solid #e2e8f0",
-            background: "#fff", color: "#64748b", fontSize: 13, cursor: "pointer",
-          }}>別のアカウントで登録</button>
         </div>
       </div>
     </div>
@@ -698,34 +455,315 @@ function ComposeModal({ onSend, onClose }) {
   );
 }
 
+// ---- Add Member Modal ----
+function AddMemberModal({ onAdd, onClose }) {
+  const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [zodiac, setZodiac] = useState(null);
+  const [role, setRole] = useState("member");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const phoneValid = phone.replace(/\D/g, "").length >= 10;
+  const ok = phoneValid && name.trim() && zodiac;
+
+  const handleSubmit = async () => {
+    if (!ok) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api.post("/api/admin/members", {
+        phone: phone.replace(/\D/g, ""),
+        name: name.trim(),
+        zodiac,
+        role,
+      });
+      if (result.error) {
+        setError(result.error);
+        setLoading(false);
+        return;
+      }
+      onAdd(result);
+    } catch {
+      setError("通信エラーが発生しました");
+      setLoading(false);
+    }
+  };
+
+  const inp = { width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #cbd5e1", fontSize: 14, fontFamily: "'Noto Sans JP', sans-serif", outline: "none", boxSizing: "border-box" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, backdropFilter: "blur(4px)" }}>
+      <div style={{ background: "#fff", borderRadius: 20, padding: "28px 24px", width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#1e293b" }}>👤 会員追加</h3>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#94a3b8" }}>✕</button>
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 6, display: "block" }}>📱 電話番号</label>
+        <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="090-1234-5678" style={{ ...inp, marginBottom: 14 }} />
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 6, display: "block" }}>👤 名前</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例: 山田太郎（3丁目）" style={{ ...inp, marginBottom: 14 }} />
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 6, display: "block" }}>役割</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          {[{ v: "member", l: "一般会員" }, { v: "admin", l: "管理者" }].map(r => (
+            <button key={r.v} onClick={() => setRole(r.v)} style={{
+              padding: "6px 16px", borderRadius: 20,
+              border: role === r.v ? "2px solid #2563eb" : "2px solid #e2e8f0",
+              background: role === r.v ? "#eff6ff" : "#fff",
+              color: role === r.v ? "#2563eb" : "#64748b",
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}>{r.l}</button>
+          ))}
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 10, display: "block" }}>干支</label>
+        <ZodiacGrid selected={zodiac} onSelect={setZodiac} disabled={loading} />
+
+        {error && <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginTop: 12 }}>{error}</p>}
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 }}>
+          <button onClick={onClose} style={{ padding: "10px 22px", borderRadius: 10, border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>キャンセル</button>
+          <button onClick={handleSubmit} disabled={!ok || loading}
+            style={{ padding: "10px 28px", borderRadius: 10, border: "none", background: ok && !loading ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#cbd5e1", color: "#fff", fontSize: 14, fontWeight: 700, cursor: ok && !loading ? "pointer" : "not-allowed" }}>
+            {loading ? "登録中..." : "登録する"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- CSV Import Modal ----
+function CsvImportModal({ onImport, onClose }) {
+  const [csvText, setCsvText] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const fileRef = useRef(null);
+
+  const ZODIAC_JP_MAP = {
+    '子': 'rat', '丑': 'ox', '寅': 'tiger', '卯': 'rabbit',
+    '辰': 'dragon', '巳': 'snake', '午': 'horse', '未': 'sheep',
+    '申': 'monkey', '酉': 'rooster', '戌': 'dog', '亥': 'boar',
+    'ねずみ': 'rat', 'うし': 'ox', 'とら': 'tiger', 'うさぎ': 'rabbit',
+    'たつ': 'dragon', 'へび': 'snake', 'うま': 'horse', 'ひつじ': 'sheep',
+    'さる': 'monkey', 'とり': 'rooster', 'いぬ': 'dog', 'いのしし': 'boar',
+  };
+
+  const zodiacKeys = ZODIAC_SIGNS.map(z => z.key);
+
+  const parseCsv = (text) => {
+    const lines = text.trim().split("\n").filter(l => l.trim());
+    const rows = [];
+    for (const line of lines) {
+      const parts = line.split(",").map(s => s.trim());
+      if (parts.length < 3) continue;
+      // Skip header row
+      if (parts[0] === '電話番号' || parts[0].toLowerCase() === 'phone') continue;
+      const phone = parts[0];
+      const name = parts[1];
+      let zodiac = parts[2].toLowerCase();
+      // Japanese zodiac support
+      if (!zodiacKeys.includes(zodiac)) {
+        zodiac = ZODIAC_JP_MAP[parts[2]] || zodiac;
+      }
+      rows.push({ phone, name, zodiac });
+    }
+    return rows;
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      setCsvText(text);
+      setPreview(parseCsv(text));
+      setError("");
+      setResult(null);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleParse = () => {
+    if (!csvText.trim()) { setError("CSVデータを入力してください"); return; }
+    const rows = parseCsv(csvText);
+    if (rows.length === 0) { setError("有効な行が見つかりません"); return; }
+    setPreview(rows);
+    setError("");
+  };
+
+  const handleImport = async () => {
+    if (!preview || preview.length === 0) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api.post("/api/admin/members/import", { rows: preview });
+      if (res.error) {
+        setError(res.error);
+        setLoading(false);
+        return;
+      }
+      setResult(res);
+      setLoading(false);
+      if (res.success > 0) onImport();
+    } catch {
+      setError("通信エラーが発生しました");
+      setLoading(false);
+    }
+  };
+
+  const inp = { width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #cbd5e1", fontSize: 14, fontFamily: "'Noto Sans JP', sans-serif", outline: "none", boxSizing: "border-box" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, backdropFilter: "blur(4px)" }}>
+      <div style={{ background: "#fff", borderRadius: 20, padding: "28px 24px", width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#1e293b" }}>📄 CSV一括登録</h3>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#94a3b8" }}>✕</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, lineHeight: 1.6 }}>
+          CSVフォーマット: <code>電話番号,名前,干支</code><br />
+          干支は英語キー(rat,ox...)または日本語(子,丑...)に対応
+        </div>
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,.txt"
+          onChange={handleFileChange}
+          style={{ display: "none" }}
+        />
+        <button onClick={() => fileRef.current?.click()} style={{
+          width: "100%", padding: 12, borderRadius: 10, border: "2px dashed #cbd5e1",
+          background: "#f8fafc", color: "#64748b", fontSize: 14, cursor: "pointer", marginBottom: 12,
+        }}>📁 CSVファイルを選択</button>
+
+        <textarea
+          value={csvText}
+          onChange={(e) => { setCsvText(e.target.value); setPreview(null); setResult(null); }}
+          placeholder={"09012345678,山田太郎,辰\n09098765432,佐藤花子,子"}
+          rows={5}
+          style={{ ...inp, resize: "vertical", marginBottom: 12, lineHeight: 1.7, fontFamily: "monospace" }}
+        />
+
+        {!preview && (
+          <button onClick={handleParse} style={{
+            width: "100%", padding: 10, borderRadius: 10, border: "none",
+            background: "#2563eb", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 12,
+          }}>プレビュー</button>
+        )}
+
+        {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 12 }}>{error}</p>}
+
+        {preview && preview.length > 0 && !result && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#475569", marginBottom: 8 }}>
+              プレビュー ({preview.length}件)
+            </div>
+            <div style={{ maxHeight: 200, overflow: "auto", border: "1px solid #e2e8f0", borderRadius: 10, fontSize: 13 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc" }}>
+                    <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>電話番号</th>
+                    <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>名前</th>
+                    <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>干支</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map((r, i) => {
+                    const z = ZODIAC_SIGNS.find(z => z.key === r.zodiac);
+                    return (
+                      <tr key={i}>
+                        <td style={{ padding: "6px 10px", borderBottom: "1px solid #f1f5f9" }}>{r.phone}</td>
+                        <td style={{ padding: "6px 10px", borderBottom: "1px solid #f1f5f9" }}>{r.name}</td>
+                        <td style={{ padding: "6px 10px", borderBottom: "1px solid #f1f5f9" }}>
+                          {z ? `${z.emoji} ${z.label}` : <span style={{ color: "#ef4444" }}>?{r.zodiac}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <button onClick={handleImport} disabled={loading} style={{
+              width: "100%", padding: 12, borderRadius: 10, border: "none",
+              background: loading ? "#cbd5e1" : "linear-gradient(135deg, #059669, #047857)",
+              color: "#fff", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", marginTop: 12,
+            }}>{loading ? "インポート中..." : `${preview.length}件をインポート`}</button>
+          </div>
+        )}
+
+        {result && (
+          <div style={{
+            padding: 16, borderRadius: 10, marginBottom: 16,
+            background: result.errors.length === 0 ? "#ecfdf5" : "#fffbeb",
+            border: result.errors.length === 0 ? "1px solid #86efac" : "1px solid #fde68a",
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b", marginBottom: 8 }}>
+              インポート結果
+            </div>
+            <div style={{ fontSize: 13, color: "#059669" }}>成功: {result.success}件</div>
+            {result.errors.length > 0 && (
+              <div style={{ fontSize: 13, color: "#dc2626", marginTop: 4 }}>
+                エラー: {result.errors.length}件
+                {result.errors.map((e, i) => (
+                  <div key={i} style={{ fontSize: 12, marginTop: 2 }}>・{e.phone}: {e.error}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <button onClick={onClose} style={{
+          width: "100%", padding: 10, borderRadius: 10, border: "1px solid #e2e8f0",
+          background: "#fff", color: "#64748b", fontSize: 14, fontWeight: 600, cursor: "pointer",
+        }}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
 // ============================================
 // Main App
 // ============================================
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
-  const [savedUser, setSavedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [readMap, setReadMap] = useState({});
   const [users, setUsers] = useState([]);
   const [showCompose, setShowCompose] = useState(false);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
   const [filterCat, setFilterCat] = useState("all");
   const [adminTab, setAdminTab] = useState("messages");
-  const [forceNewUser, setForceNewUser] = useState(false);
 
   const isAdmin = currentUser?.role === "admin";
 
-  // ---- Init ----
+  // ---- Init: auto-login with saved token ----
   useEffect(() => {
     (async () => {
       try {
         const raw = localStorage.getItem(SESSION_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          setSavedUser(parsed);
-          // Restore JWT token if available
           if (parsed.token) {
-            api.setToken(parsed.token);
+            // Verify token with server
+            const result = await api.post("/api/auth/verify", { token: parsed.token });
+            if (result.token && result.user) {
+              api.setToken(result.token);
+              const session = { ...result.user, token: result.token };
+              localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+              setCurrentUser(result.user);
+              subscribeToPush();
+            }
           }
         }
       } catch {}
@@ -756,48 +794,24 @@ export default function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
-  // ---- Register ----
-  const handleRegister = async (data) => {
-    let user;
-    if (data.token && data.user) {
-      // Real WebAuthn: server already registered, we have JWT + user
-      api.setToken(data.token);
-      user = data.user;
-    } else {
-      // Simulated fallback: register via simple endpoint (no WebAuthn)
-      user = await api.post("/api/auth/register/begin", { phone: data.phone, name: data.name });
-      // For simulated mode, create a basic member record without WebAuthn
-      // (server will return options, but we just need member created)
-      user = { phone: data.phone, name: data.name, method: data.method };
-    }
-    const session = { ...user, token: data.token || null };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  // ---- Login ----
+  const handleLogin = (user, token) => {
+    api.setToken(token);
     setCurrentUser(user);
-    setSavedUser(session);
-    setForceNewUser(false);
-    // Subscribe to push notifications
-    if (data.token) {
-      subscribeToPush();
-    }
+    subscribeToPush();
     // Refresh data
-    try {
-      const d = await api.get("/api/messages");
-      setMessages(d.messages || []);
-      setReadMap(d.readMap || {});
-      setUsers(d.members || []);
-    } catch {}
+    api.get("/api/messages").then(data => {
+      setMessages(data.messages || []);
+      setReadMap(data.readMap || {});
+      setUsers(data.members || []);
+    }).catch(() => {});
   };
 
-  // ---- Login (returning) ----
-  const handleLogin = async (user) => {
-    if (user.token) {
-      api.setToken(user.token);
-      const session = { ...user };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      setSavedUser(session);
-      subscribeToPush();
-    }
-    setCurrentUser(user);
+  // ---- Logout ----
+  const handleLogout = () => {
+    localStorage.removeItem(SESSION_KEY);
+    api.setToken(null);
+    setCurrentUser(null);
   };
 
   // ---- Read ----
@@ -824,6 +838,20 @@ export default function App() {
     setMessages(prev => prev.filter(m => m.id !== id));
   };
 
+  // ---- Refresh members after add/import ----
+  const refreshMembers = async () => {
+    try {
+      const data = await api.get("/api/messages");
+      setUsers(data.members || []);
+    } catch {}
+  };
+
+  // ---- Delete member ----
+  const handleDeleteMember = async (id) => {
+    await api.del(`/api/admin/members/${id}`);
+    setUsers(prev => prev.filter(m => m.id !== id));
+  };
+
   if (loading) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "linear-gradient(160deg, #0c1929, #1a3352, #0c1929)", color: "#fff" }}>
@@ -835,12 +863,9 @@ export default function App() {
     );
   }
 
-  // ---- Auth screens ----
+  // ---- Auth screen ----
   if (!currentUser) {
-    if (savedUser && !forceNewUser) {
-      return <LoginScreen user={savedUser} onLogin={handleLogin} onNewUser={() => setForceNewUser(true)} />;
-    }
-    return <RegisterScreen onRegister={handleRegister} />;
+    return <AuthScreen onLogin={handleLogin} />;
   }
 
   // ---- Main Screen ----
@@ -876,7 +901,7 @@ export default function App() {
             {!isAdmin && unread > 0 && (
               <span style={{ background: "#ef4444", color: "#fff", borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{unread}件</span>
             )}
-            <button onClick={() => { localStorage.removeItem(SESSION_KEY); api.setToken(null); setCurrentUser(null); setSavedUser(null); setForceNewUser(false); }}
+            <button onClick={handleLogout}
               style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 12, cursor: "pointer" }}>
               ログアウト
             </button>
@@ -944,7 +969,6 @@ export default function App() {
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>{reads.length}/{users.length} ({pct}%)</span>
                   </div>
-                  {/* Who read / who didn't */}
                   <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#64748b" }}>
                     <div>✓ 既読: {reads.map(r => r.name).join(", ") || "なし"}</div>
                   </div>
@@ -963,56 +987,82 @@ export default function App() {
         {/* Admin: Members */}
         {isAdmin && adminTab === "members" && (
           <div>
-            <h3 style={{ fontSize: 14, fontWeight: 700, color: "#475569", marginBottom: 12 }}>登録会員 ({users.length}名)</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, color: "#475569" }}>登録会員 ({users.length}名)</h3>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setShowCsvImport(true)} style={{
+                  padding: "6px 12px", borderRadius: 8, border: "1px solid #e2e8f0",
+                  background: "#fff", color: "#475569", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}>📄 CSV一括登録</button>
+                <button onClick={() => setShowAddMember(true)} style={{
+                  padding: "6px 12px", borderRadius: 8, border: "none",
+                  background: "#2563eb", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}>+ 会員追加</button>
+              </div>
+            </div>
             {users.length === 0 ? (
               <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
                 <div style={{ fontSize: 40, marginBottom: 12 }}>👥</div>
                 <div>まだ登録会員がいません</div>
+                <div style={{ fontSize: 13, marginTop: 8 }}>「会員追加」または「CSV一括登録」で追加してください</div>
               </div>
-            ) : users.map((u, i) => (
-              <div key={u.id} style={{
-                background: "#fff", borderRadius: 12, padding: "14px 16px", marginBottom: 8, border: "1px solid #e2e8f0",
-                display: "flex", alignItems: "center", gap: 12, animation: `slideIn 0.2s ease ${i * 0.05}s both`,
-              }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: "50%",
-                  background: u.role === "admin" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #3b82f6, #1d4ed8)",
-                  color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700,
-                }}>{u.role === "admin" ? "👑" : u.name.charAt(0)}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
-                    {u.name}
-                    {u.role === "admin" && <span style={{ fontSize: 10, color: "#d97706", marginLeft: 6, fontWeight: 600 }}>管理者</span>}
+            ) : users.map((u, i) => {
+              const zodiacInfo = ZODIAC_SIGNS.find(z => z.key === u.zodiac);
+              return (
+                <div key={u.id} style={{
+                  background: "#fff", borderRadius: 12, padding: "14px 16px", marginBottom: 8, border: "1px solid #e2e8f0",
+                  display: "flex", alignItems: "center", gap: 12, animation: `slideIn 0.2s ease ${i * 0.05}s both`,
+                }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: "50%",
+                    background: u.role === "admin" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #3b82f6, #1d4ed8)",
+                    color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700,
+                  }}>{u.role === "admin" ? "👑" : u.name.charAt(0)}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
+                      {u.name}
+                      {u.role === "admin" && <span style={{ fontSize: 10, color: "#d97706", marginLeft: 6, fontWeight: 600 }}>管理者</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>📱 {formatPhone(u.phone)}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
+                      {zodiacInfo && <span>{zodiacInfo.emoji} {zodiacInfo.label}</span>}
+                      <span>・{formatDate(u.registeredAt)}</span>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>📱 {formatPhone(u.phone)}</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
-                    <span>{u.method === "webauthn" ? "🔐 WebAuthn認証済" : "👆 生体認証済(デモ)"}</span>
-                    <span>・{formatDate(u.registeredAt)}</span>
+                  <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#059669" }}>
+                        {messages.filter(m => (readMap[m.id] || []).find(r => r.phone === u.phone)).length}/{messages.length}
+                      </span>
+                      <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 2 }}>既読</span>
+                    </div>
+                    {u.phone !== currentUser?.phone && (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button onClick={async () => {
+                          const newRole = u.role === "admin" ? "member" : "admin";
+                          if (!confirm(`${u.name} を${newRole === "admin" ? "管理者に昇格" : "一般会員に変更"}しますか？`)) return;
+                          await api.patch(`/api/members/${u.id}/role`, { role: newRole });
+                          setUsers(prev => prev.map(m => m.id === u.id ? { ...m, role: newRole } : m));
+                        }} style={{
+                          padding: "3px 8px", borderRadius: 6, border: "1px solid #e2e8f0",
+                          background: u.role === "admin" ? "#fef3c7" : "#f0f9ff",
+                          color: u.role === "admin" ? "#92400e" : "#1e40af",
+                          fontSize: 10, cursor: "pointer", fontWeight: 600,
+                        }}>{u.role === "admin" ? "権限解除" : "管理者に"}</button>
+                        <button onClick={() => {
+                          if (!confirm(`${u.name} を削除しますか？`)) return;
+                          handleDeleteMember(u.id);
+                        }} style={{
+                          padding: "3px 8px", borderRadius: 6, border: "1px solid #fecaca",
+                          background: "#fff", color: "#dc2626",
+                          fontSize: 10, cursor: "pointer", fontWeight: 600,
+                        }}>削除</button>
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                  <div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#059669" }}>
-                      {messages.filter(m => (readMap[m.id] || []).find(r => r.phone === u.phone)).length}/{messages.length}
-                    </span>
-                    <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 2 }}>既読</span>
-                  </div>
-                  {u.phone !== currentUser?.phone && (
-                    <button onClick={async () => {
-                      const newRole = u.role === "admin" ? "member" : "admin";
-                      if (!confirm(`${u.name} を${newRole === "admin" ? "管理者に昇格" : "一般会員に変更"}しますか？`)) return;
-                      await api.patch(`/api/members/${u.id}/role`, { role: newRole });
-                      setUsers(prev => prev.map(m => m.id === u.id ? { ...m, role: newRole } : m));
-                    }} style={{
-                      padding: "3px 8px", borderRadius: 6, border: "1px solid #e2e8f0",
-                      background: u.role === "admin" ? "#fef3c7" : "#f0f9ff",
-                      color: u.role === "admin" ? "#92400e" : "#1e40af",
-                      fontSize: 10, cursor: "pointer", fontWeight: 600,
-                    }}>{u.role === "admin" ? "権限解除" : "管理者に"}</button>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -1046,6 +1096,8 @@ export default function App() {
       )}
 
       {showCompose && <ComposeModal onSend={handleSend} onClose={() => setShowCompose(false)} />}
+      {showAddMember && <AddMemberModal onAdd={(m) => { setShowAddMember(false); refreshMembers(); }} onClose={() => setShowAddMember(false)} />}
+      {showCsvImport && <CsvImportModal onImport={refreshMembers} onClose={() => setShowCsvImport(false)} />}
     </div>
   );
 }

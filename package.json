@@ -1,7 +1,7 @@
 {
   "name": "chonaikai-messenger",
   "version": "0.1.0",
-  "description": "町内会向けメッセージ配布プラットフォーム - 電話番号 + WebAuthn認証",
+  "description": "町内会向けメッセージ配布プラットフォーム - 電話番号 + 干支認証",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -9,12 +9,11 @@
     "preview": "vite preview",
     "start": "node server/index.js",
     "dev:server": "node server/index.js",
+    "seed-admin": "node server/seed-admin.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@simplewebauthn/browser": "^10.0.0",
-    "@simplewebauthn/server": "^13.2.2",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
