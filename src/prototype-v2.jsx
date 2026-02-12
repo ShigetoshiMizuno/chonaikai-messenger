@@ -26,16 +26,27 @@ const ZODIAC_SIGNS = [
 // ---- API Helper (with JWT token management) ----
 const api = {
   _token: null,
+  _onSessionExpired: null,
   setToken(t) { this._token = t; },
   getToken() { return this._token; },
+  onSessionExpired(cb) { this._onSessionExpired = cb; },
   _headers() {
     const h = { "Content-Type": "application/json" };
     if (this._token) h["Authorization"] = `Bearer ${this._token}`;
     return h;
   },
+  async _handleResponse(res) {
+    if (res.status === 401 && this._token) {
+      this._token = null;
+      localStorage.removeItem(SESSION_KEY);
+      if (this._onSessionExpired) this._onSessionExpired();
+      return { error: "session_expired" };
+    }
+    return res.json();
+  },
   async get(path) {
     const res = await fetch(path, { headers: this._headers() });
-    return res.json();
+    return this._handleResponse(res);
   },
   async post(path, body) {
     const res = await fetch(path, {
@@ -43,7 +54,7 @@ const api = {
       headers: this._headers(),
       body: JSON.stringify(body),
     });
-    return res.json();
+    return this._handleResponse(res);
   },
   async patch(path, body) {
     const res = await fetch(path, {
@@ -51,11 +62,11 @@ const api = {
       headers: this._headers(),
       body: JSON.stringify(body),
     });
-    return res.json();
+    return this._handleResponse(res);
   },
   async del(path) {
     const res = await fetch(path, { method: "DELETE", headers: this._headers() });
-    return res.json();
+    return this._handleResponse(res);
   },
 };
 
@@ -150,6 +161,64 @@ async function subscribeToPush() {
 // ============================================
 // Components
 // ============================================
+
+// ---- Session Expired Screen ----
+function SessionExpiredScreen({ userName, onReLogin }) {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "おはようございます" : hour < 18 ? "こんにちは" : "こんばんは";
+  const sleepEmoji = hour < 6 || hour >= 22 ? "🌙" : "💤";
+
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "linear-gradient(160deg, #0c1929, #1a3352, #0c1929)",
+      fontFamily: "'Noto Sans JP', sans-serif", padding: 20,
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700;800&display=swap');
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
+      <div style={{
+        background: "#fff", borderRadius: 24, padding: "40px 28px", maxWidth: 360,
+        width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+        animation: "fadeIn 0.6s ease-out",
+      }}>
+        <div style={{ fontSize: 64, marginBottom: 8, animation: "float 3s ease-in-out infinite" }}>
+          🏘️{sleepEmoji}
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: "#1e293b", marginBottom: 8 }}>
+          あらら、お久しぶり！
+        </div>
+        <div style={{ fontSize: 14, color: "#64748b", lineHeight: 1.8, marginBottom: 8 }}>
+          {userName && <><span style={{ fontWeight: 700, color: "#334155" }}>{userName}さん</span>、{greeting}！<br /></>}
+          しばらくお留守だったので<br />
+          セキュリティのために<br />
+          もう一度確認させてくださいね
+        </div>
+        <div style={{ fontSize: 40, margin: "16px 0" }}>🙏</div>
+        <div style={{
+          fontSize: 12, color: "#94a3b8", marginBottom: 20,
+          background: "#f8fafc", borderRadius: 10, padding: "8px 12px",
+        }}>
+          安全のため、定期的に本人確認をしています。<br />すぐ終わりますのでご安心ください！
+        </div>
+        <button onClick={onReLogin} style={{
+          width: "100%", padding: "16px", borderRadius: 16, border: "none",
+          background: "linear-gradient(135deg, #2563eb, #1d4ed8)", color: "#fff",
+          fontSize: 16, fontWeight: 800, cursor: "pointer",
+          boxShadow: "0 4px 14px rgba(37,99,235,0.4)",
+          transition: "transform 0.15s",
+        }}
+          onMouseDown={e => e.currentTarget.style.transform = "scale(0.97)"}
+          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+        >
+          もういっかいログイン
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function Badge({ children, color = "#2563eb", bg = "#eff6ff" }) {
   return (
@@ -776,8 +845,19 @@ export default function App() {
   const [filterCat, setFilterCat] = useState("all");
   const [adminTab, setAdminTab] = useState("messages");
   const [pushState, setPushState] = useState("unknown"); // unknown|unsupported|unsubscribed|subscribed|denied
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [expiredUserName, setExpiredUserName] = useState("");
 
   const isAdmin = currentUser?.role === "admin";
+
+  // ---- Listen for session expiration ----
+  useEffect(() => {
+    api.onSessionExpired(() => {
+      setExpiredUserName(currentUser?.name || "");
+      setCurrentUser(null);
+      setSessionExpired(true);
+    });
+  }, [currentUser]);
 
   // ---- Init: auto-login with saved token ----
   useEffect(() => {
@@ -789,7 +869,12 @@ export default function App() {
           if (parsed.token) {
             // Verify token with server
             const result = await api.post("/api/auth/verify", { token: parsed.token });
-            if (result.token && result.user) {
+            if (result.error === "session_expired" || result.error === "Invalid token") {
+              // Token expired — show cute re-login screen
+              setExpiredUserName(parsed.name || "");
+              setSessionExpired(true);
+              localStorage.removeItem(SESSION_KEY);
+            } else if (result.token && result.user) {
               api.setToken(result.token);
               const session = { ...result.user, token: result.token };
               localStorage.setItem(SESSION_KEY, JSON.stringify(session));
@@ -897,6 +982,11 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  // ---- Session expired screen ----
+  if (sessionExpired && !currentUser) {
+    return <SessionExpiredScreen userName={expiredUserName} onReLogin={() => setSessionExpired(false)} />;
   }
 
   // ---- Auth screen ----
