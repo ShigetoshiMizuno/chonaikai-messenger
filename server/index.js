@@ -322,6 +322,11 @@ app.post('/api/messages', authMiddleware, adminMiddleware, async (req, res) => {
     createdAt: new Date().toISOString(),
   };
 
+  // Auto-mark author as read
+  if (req.user.phone) {
+    stmts.markRead.run(result.lastInsertRowid, req.user.phone);
+  }
+
   // Send push notification to all subscribers (fire and forget)
   const pri = { urgent: '🚨', important: '⚠️', normal: '📢', info: 'ℹ️' };
   push.sendPushToAll(db, {
