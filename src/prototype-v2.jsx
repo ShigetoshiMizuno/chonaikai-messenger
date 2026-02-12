@@ -93,20 +93,37 @@ const CATEGORIES = [
   { id: "other", label: "その他", icon: "📎" },
 ];
 
+// ---- Push notification helpers ----
+function canUsePush() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+async function getPushState() {
+  if (!canUsePush()) return "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  try {
+    const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+    if (reg) {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) return "subscribed";
+    }
+  } catch {}
+  return "unsubscribed";
+}
+
 // ---- Push notification subscription ----
 async function subscribeToPush() {
   try {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
-    if (!("Notification" in window)) return;
+    if (!canUsePush()) return false;
 
     const permission = await Notification.requestPermission();
-    if (permission !== "granted") return;
+    if (permission !== "granted") return false;
 
     const registration = await navigator.serviceWorker.register("/sw.js");
     await navigator.serviceWorker.ready;
 
     const { key } = await api.get("/api/push/vapidPublicKey");
-    if (!key) return;
+    if (!key) return false;
 
     // Convert VAPID key to Uint8Array
     const urlBase64ToUint8Array = (base64String) => {
@@ -117,14 +134,16 @@ async function subscribeToPush() {
     };
 
     const subscription = await registration.pushManager.subscribe({
-      userVisuallyShown: true,
+      userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(key),
     });
 
     await api.post("/api/push/subscribe", { subscription: subscription.toJSON() });
     console.log("Push subscription registered");
+    return true;
   } catch (e) {
     console.log("Push subscription failed:", e.message);
+    return false;
   }
 }
 
@@ -756,6 +775,7 @@ export default function App() {
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [filterCat, setFilterCat] = useState("all");
   const [adminTab, setAdminTab] = useState("messages");
+  const [pushState, setPushState] = useState("unknown"); // unknown|unsupported|unsubscribed|subscribed|denied
 
   const isAdmin = currentUser?.role === "admin";
 
@@ -774,7 +794,11 @@ export default function App() {
               const session = { ...result.user, token: result.token };
               localStorage.setItem(SESSION_KEY, JSON.stringify(session));
               setCurrentUser(result.user);
-              subscribeToPush();
+              // Register SW for push reception but don't request permission (needs user gesture on iOS)
+              if ("serviceWorker" in navigator) {
+                navigator.serviceWorker.register("/sw.js").catch(() => {});
+              }
+              getPushState().then(setPushState);
             }
           }
         }
@@ -810,7 +834,7 @@ export default function App() {
   const handleLogin = (user, token) => {
     api.setToken(token);
     setCurrentUser(user);
-    subscribeToPush();
+    subscribeToPush().then(ok => setPushState(ok ? "subscribed" : "unsubscribed"));
     // Refresh data
     api.get("/api/messages").then(data => {
       setMessages(data.messages || []);
@@ -922,6 +946,41 @@ export default function App() {
       </header>
 
       <div style={{ maxWidth: 600, margin: "0 auto", padding: "12px 16px" }}>
+        {/* Push notification banner */}
+        {pushState === "unsubscribed" && (
+          <div style={{
+            background: "linear-gradient(135deg, #fef3c7, #fde68a)", borderRadius: 12,
+            padding: "12px 16px", marginBottom: 12, display: "flex", alignItems: "center",
+            gap: 12, boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+          }}>
+            <span style={{ fontSize: 24 }}>🔔</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>通知が届きません</div>
+              <div style={{ fontSize: 11, color: "#a16207", marginTop: 2 }}>タップして通知を有効にしてください</div>
+            </div>
+            <button onClick={async () => {
+              const ok = await subscribeToPush();
+              setPushState(ok ? "subscribed" : (Notification.permission === "denied" ? "denied" : "unsubscribed"));
+            }} style={{
+              padding: "8px 16px", borderRadius: 8, border: "none",
+              background: "#d97706", color: "#fff", fontSize: 13, fontWeight: 700,
+              cursor: "pointer", whiteSpace: "nowrap",
+            }}>有効にする</button>
+          </div>
+        )}
+        {pushState === "denied" && (
+          <div style={{
+            background: "#fef2f2", borderRadius: 12, padding: "12px 16px", marginBottom: 12,
+            display: "flex", alignItems: "center", gap: 12,
+          }}>
+            <span style={{ fontSize: 24 }}>🔕</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#991b1b" }}>通知がブロックされています</div>
+              <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 2 }}>端末の設定から通知を許可してください</div>
+            </div>
+          </div>
+        )}
+
         {/* Admin Tabs */}
         {isAdmin && (
           <div style={{ display: "flex", gap: 4, marginBottom: 16, background: "#e2e8f0", borderRadius: 12, padding: 4 }}>

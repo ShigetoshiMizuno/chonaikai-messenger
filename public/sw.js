@@ -1,7 +1,7 @@
 // 町内会メッセンジャー Service Worker
 // Push通知 + オフラインキャッシュ
 
-const CACHE_NAME = 'chonaikai-v3';
+const CACHE_NAME = 'chonaikai-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -92,5 +92,17 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  event.waitUntil(clients.openWindow(event.notification.data.url || '/'));
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // Focus existing window if found
+      for (const client of windowClients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // Open new window if none found
+      return clients.openWindow(url);
+    })
+  );
 });
