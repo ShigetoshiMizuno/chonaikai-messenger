@@ -1,7 +1,7 @@
 // 町内会メッセンジャー Service Worker
 // Push通知 + オフラインキャッシュ
 
-const CACHE_NAME = 'chonaikai-v1';
+const CACHE_NAME = 'chonaikai-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
